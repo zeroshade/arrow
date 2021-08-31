@@ -18,8 +18,12 @@ package compute
 
 import (
 	"reflect"
+	"strconv"
 
 	"github.com/apache/arrow/go/arrow"
+	"github.com/apache/arrow/go/arrow/array"
+	"github.com/apache/arrow/go/arrow/ipc"
+	"github.com/apache/arrow/go/arrow/memory"
 	"github.com/apache/arrow/go/arrow/scalar"
 )
 
@@ -115,10 +119,16 @@ func (p *Parameter) Equals(other Expression) bool {
 
 type funcopt interface {
 	typename() string
+	ToStructScalar(memory.Allocator) (names []string, values []scalar.Scalar)
 }
 
 type FunctionOptions struct {
 	opt funcopt
+}
+
+func (f FunctionOptions) ToStructScalar(mem memory.Allocator) (*scalar.Struct, error) {
+	names, values := f.opt.ToStructScalar(mem)
+	return scalar.NewStructScalarWithNames(values, names)
 }
 
 func (f FunctionOptions) Equals(rhs *FunctionOptions) bool { return reflect.DeepEqual(f.opt, rhs.opt) }
@@ -239,11 +249,46 @@ type MakeStructOptions struct {
 
 func (MakeStructOptions) typename() string { return "MakeStructOptions" }
 
+func (m *MakeStructOptions) ToStructScalar(mem memory.Allocator) (names []string, values []scalar.Scalar) {
+	namesbld := array.NewStringBuilder(mem)
+	defer namesbld.Release()
+	namesbld.AppendValues(m.FieldNames, nil)
+
+	nullbldr := array.NewBooleanBuilder(mem)
+	defer nullbldr.Release()
+	nullbldr.AppendValues(m.FieldNullability, nil)
+
+	bldr := array.NewMapBuilder(mem, arrow.BinaryTypes.Binary, arrow.BinaryTypes.Binary, false)
+	defer bldr.Release()
+
+	kbldr := bldr.KeyBuilder().(*array.BinaryBuilder)
+	ibldr := bldr.ItemBuilder().(*array.BinaryBuilder)
+
+	for _, md := range m.FieldMetadata {
+		bldr.Append(true)
+		if m != nil {
+			kbldr.AppendStringValues(md.Keys(), nil)
+			ibldr.AppendStringValues(md.Values(), nil)
+		}
+	}
+
+	names = []string{"field_names", "field_nullability", "field_metadata"}
+	values = []scalar.Scalar{
+		scalar.NewListScalar(namesbld.NewArray()),
+		scalar.NewListScalar(nullbldr.NewArray()),
+		scalar.NewMapScalar(bldr.NewMapArray().ListValues())}
+	return
+}
+
 type NullOptions struct {
 	NanIsNull bool
 }
 
 func (NullOptions) typename() string { return "NullOptions" }
+
+func (n *NullOptions) ToStructScalar(mem memory.Allocator) (names []string, values []scalar.Scalar) {
+	return []string{"nan_is_null"}, []scalar.Scalar{scalar.NewBooleanScalar(n.NanIsNull)}
+}
 
 func Project(values []Expression, names []string) Expression {
 	return NewCall("make_struct", values,
@@ -275,7 +320,7 @@ func GreaterEqual(lhs, rhs Expression) Expression {
 }
 
 func IsNull(lhs Expression, nanIsNull bool) Expression {
-	return NewCall("less", []Expression{lhs}, &FunctionOptions{NullOptions{nanIsNull}})
+	return NewCall("less", []Expression{lhs}, &FunctionOptions{&NullOptions{nanIsNull}})
 }
 
 func IsValid(lhs Expression) Expression {
@@ -325,4 +370,84 @@ func OrList(ops ...Expression) Expression {
 
 func Not(expr Expression) Expression {
 	return NewCall("invert", []Expression{expr}, nil)
+}
+
+// SerializeExpr serializes expressions by converting them to Metadata and
+// storing this in the schema of a Record. Embedded arrays and scalars are
+// stored in its columns. Finally the record is written as an IPC file
+func SerializeExpr(expr Expression, mem memory.Allocator) *memory.Buffer {
+	var (
+		cols      []array.Interface
+		metaKey   []string
+		metaValue []string
+		visit     func(Expression)
+	)
+
+	addScalar := func(s scalar.Scalar) string {
+		ret := len(cols)
+		arr, err := scalar.MakeArrayFromScalar(s, 1, mem)
+		if err != nil {
+			panic(err)
+		}
+		cols = append(cols, arr)
+		return strconv.Itoa(ret)
+	}
+
+	visit = func(e Expression) {
+		switch e := e.(type) {
+		case *Literal:
+			if !e.IsScalarExpr() {
+				panic("not implemented: serialization of non-scalar literal")
+			}
+
+			metaKey = append(metaKey, "literal")
+			metaValue = append(metaValue, addScalar(e.Literal.(*ScalarDatum).Value))
+		case *Parameter:
+			if e.ref.Name() == "" {
+				panic("not implemented: serialization of non-name field_ref")
+			}
+
+			metaKey = append(metaKey, "field_ref")
+			metaValue = append(metaValue, e.ref.Name())
+		case *Call:
+			metaKey = append(metaKey, "call")
+			metaValue = append(metaValue, e.funcName)
+
+			for _, arg := range e.args {
+				visit(arg)
+			}
+
+			if e.options != nil {
+				st, err := e.options.ToStructScalar(mem)
+				if err != nil {
+					panic(err)
+				}
+				metaKey = append(metaKey, "options")
+				metaValue = append(metaValue, addScalar(st))
+			}
+
+			metaKey = append(metaKey, "end")
+			metaValue = append(metaValue, e.funcName)
+		}
+	}
+
+	visit(expr)
+	fields := make([]arrow.Field, len(cols))
+	for i, c := range cols {
+		fields[i].Type = c.DataType()
+	}
+
+	metadata := arrow.NewMetadata(metaKey, metaValue)
+	rec := array.NewRecord(arrow.NewSchema(fields, &metadata), cols, 1)
+	defer rec.Release()
+
+	buf := &BufferSeeker{mem: mem}
+	wr, err := ipc.NewFileWriter(buf, ipc.WithSchema(rec.Schema()))
+	if err != nil {
+		panic(err)
+	}
+
+	wr.Write(rec)
+	wr.Close()
+	return buf.buf
 }
