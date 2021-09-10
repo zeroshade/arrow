@@ -53,19 +53,13 @@ type (
 	Duration  int64
 )
 
-// func (d Date32) String() string {
-// 	return time.Unix(0, 0).UTC().AddDate(0, 0, int(d)).Format("2006-01-02")
-// }
-
-// func (d Date64) String() string {
-// 	return time.Unix(0, int64(d)*int64(time.Millisecond)).UTC().Format("2006-01-02")
-// }
-
+// order and values match TimeUnit::type enum in cpp/src/arrow/type_fwd.h
+// in order to maintain compatibility when serializing expressions for now.
 const (
-	Nanosecond TimeUnit = iota
-	Microsecond
+	Second TimeUnit = iota
 	Millisecond
-	Second
+	Microsecond
+	Nanosecond
 )
 
 func (u TimeUnit) Multiplier() time.Duration {

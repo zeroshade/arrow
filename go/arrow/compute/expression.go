@@ -17,7 +17,6 @@
 package compute
 
 import (
-	"fmt"
 	"reflect"
 	"strconv"
 
@@ -119,8 +118,7 @@ func (p *Parameter) Equals(other Expression) bool {
 }
 
 type funcopt interface {
-	typename() string
-	ToStructScalar(memory.Allocator) (names []string, values []scalar.Scalar)
+	TypeName() string
 }
 
 type FunctionOptions struct {
@@ -128,8 +126,11 @@ type FunctionOptions struct {
 }
 
 func (f FunctionOptions) ToStructScalar(mem memory.Allocator) (*scalar.Struct, error) {
-	names, values := f.opt.ToStructScalar(mem)
-	return scalar.NewStructScalarWithNames(values, names)
+	st, err := scalar.ToScalar(f.opt, mem)
+	if err != nil {
+		return nil, err
+	}
+	return st.(*scalar.Struct), nil
 }
 
 func (f FunctionOptions) Equals(rhs *FunctionOptions) bool { return reflect.DeepEqual(f.opt, rhs.opt) }
@@ -247,55 +248,25 @@ func ExpressionHasFieldRefs(expr Expression) bool {
 }
 
 type MakeStructOptions struct {
-	FieldNames       []string
-	FieldNullability []bool
-	FieldMetadata    []*arrow.Metadata
+	FieldNames       []string          `compute:"field_names"`
+	FieldNullability []bool            `compute:"field_nullability"`
+	FieldMetadata    []*arrow.Metadata `compute:"field_metadata"`
 }
 
-func (MakeStructOptions) typename() string { return "MakeStructOptions" }
-
-func (m *MakeStructOptions) ToStructScalar(mem memory.Allocator) (names []string, values []scalar.Scalar) {
-	namesbld := array.NewStringBuilder(mem)
-	defer namesbld.Release()
-	namesbld.AppendValues(m.FieldNames, nil)
-
-	nullbldr := array.NewBooleanBuilder(mem)
-	defer nullbldr.Release()
-	nullbldr.AppendValues(m.FieldNullability, nil)
-
-	bldr := array.NewMapBuilder(mem, arrow.BinaryTypes.Binary, arrow.BinaryTypes.Binary, false)
-	defer bldr.Release()
-
-	kbldr := bldr.KeyBuilder().(*array.BinaryBuilder)
-	ibldr := bldr.ItemBuilder().(*array.BinaryBuilder)
-
-	for _, md := range m.FieldMetadata {
-		bldr.Append(true)
-		if md != nil {
-			kbldr.AppendStringValues(md.Keys(), nil)
-			ibldr.AppendStringValues(md.Values(), nil)
-		}
-	}
-
-	names = []string{"field_names", "field_nullability", "field_metadata", "_type_name"}
-	values = []scalar.Scalar{
-		scalar.NewListScalar(namesbld.NewArray()),
-		scalar.NewListScalar(nullbldr.NewArray()),
-		scalar.NewListScalar(bldr.NewMapArray()),
-		scalar.NewBinaryScalar(memory.NewBufferBytes([]byte(m.typename())), arrow.BinaryTypes.Binary),
-	}
-	return
-}
+func (MakeStructOptions) TypeName() string { return "MakeStructOptions" }
 
 type NullOptions struct {
-	NanIsNull bool
+	NanIsNull bool `compute:"nan_is_null"`
 }
 
-func (NullOptions) typename() string { return "NullOptions" }
+func (NullOptions) TypeName() string { return "NullOptions" }
 
-func (n *NullOptions) ToStructScalar(mem memory.Allocator) (names []string, values []scalar.Scalar) {
-	return []string{"nan_is_null"}, []scalar.Scalar{scalar.NewBooleanScalar(n.NanIsNull)}
+type StrptimeOptions struct {
+	Format string         `compute:"format"`
+	Unit   arrow.TimeUnit `compute:"unit"`
 }
+
+func (StrptimeOptions) TypeName() string { return "StrptimeOptions" }
 
 func Project(values []Expression, names []string) Expression {
 	nulls := make([]bool, len(names))
@@ -452,8 +423,6 @@ func SerializeExpr(expr Expression, mem memory.Allocator) *memory.Buffer {
 	metadata := arrow.NewMetadata(metaKey, metaValue)
 	rec := array.NewRecord(arrow.NewSchema(fields, &metadata), cols, 1)
 	defer rec.Release()
-
-	fmt.Println(rec)
 
 	buf := &BufferSeeker{mem: mem}
 	wr, err := ipc.NewFileWriter(buf, ipc.WithSchema(rec.Schema()))
