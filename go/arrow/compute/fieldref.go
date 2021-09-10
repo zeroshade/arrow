@@ -24,6 +24,7 @@ import (
 	"unicode"
 
 	"github.com/apache/arrow/go/arrow"
+	"github.com/apache/arrow/go/arrow/array"
 	"golang.org/x/xerrors"
 )
 
@@ -85,6 +86,49 @@ func (f FieldPath) GetFieldFromSlice(fields []arrow.Field) (*arrow.Field, error)
 	return out, nil
 }
 
+func getChildren(arr array.Interface) (ret []array.Interface) {
+	switch arr := arr.(type) {
+	case *array.Struct:
+		ret = make([]array.Interface, arr.NumField())
+		for i := 0; i < arr.NumField(); i++ {
+			ret[i] = arr.Field(i)
+		}
+	case *array.List:
+		ret = []array.Interface{arr.ListValues()}
+	case *array.FixedSizeList:
+		ret = []array.Interface{arr.ListValues()}
+	case *array.Map:
+		ret = []array.Interface{arr.ListValues()}
+	}
+	return
+}
+
+func (f FieldPath) getArray(arrs []array.Interface) (array.Interface, error) {
+	if len(f) == 0 {
+		return nil, xerrors.New("cannot traverse empty field path")
+	}
+
+	var (
+		depth = 0
+		out   array.Interface
+	)
+	for _, idx := range f {
+		if len(arrs) == 0 {
+			return nil, xerrors.Errorf("trying to get child of array list with no children")
+		}
+
+		if idx < 0 || idx >= len(arrs) {
+			return nil, xerrors.Errorf("index out of range. indices=%s", f[:depth+1])
+		}
+
+		out = arrs[idx]
+		arrs = getChildren(out)
+		depth++
+	}
+
+	return out, nil
+}
+
 func (f FieldPath) GetField(field arrow.Field) (*arrow.Field, error) {
 	return f.GetFieldFromType(field.Type)
 }
@@ -99,6 +143,10 @@ func (f FieldPath) findAll(fields []arrow.Field) []FieldPath {
 		return []FieldPath{f}
 	}
 	return []FieldPath{}
+}
+
+func (f FieldPath) GetColumn(batch array.Record) (array.Interface, error) {
+	return f.getArray(batch.Columns())
 }
 
 func NewFieldRefFromDotPath(dotpath string) (out FieldRef, err error) {
@@ -162,6 +210,10 @@ func NewFieldRefFromDotPath(dotpath string) (out FieldRef, err error) {
 
 	out.flatten(children)
 	return
+}
+
+func NewFieldNameRef(name string) FieldRef {
+	return FieldRef{fieldNameRef(name)}
 }
 
 type FieldRef struct {
@@ -235,6 +287,40 @@ func (f FieldRef) FindAll(fields []arrow.Field) []FieldPath {
 
 func (f FieldRef) FindAllField(field arrow.Field) []FieldPath {
 	return f.impl.findAll(getFields(field.Type))
+}
+
+func (f FieldRef) FindOneOrNoneRecord(root array.Record) (FieldPath, error) {
+	matches := f.FindAll(root.Schema().Fields())
+	if len(matches) > 1 {
+		return nil, xerrors.Errorf("multiple matches for %s in %s", f, root.Schema())
+	}
+	if len(matches) == 0 {
+		return FieldPath{}, nil
+	}
+	return matches[0], nil
+}
+
+func (f FieldRef) GetAllColumns(root array.Record) ([]array.Interface, error) {
+	out := make([]array.Interface, 0)
+	for _, m := range f.FindAll(root.Schema().Fields()) {
+		n, err := m.GetColumn(root)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+func (f FieldRef) GetOneColumnOrNone(root array.Record) (array.Interface, error) {
+	match, err := f.FindOneOrNoneRecord(root)
+	if err != nil {
+		return nil, err
+	}
+	if len(match) == 0 {
+		return nil, nil
+	}
+	return match.GetColumn(root)
 }
 
 type fieldNameRef string

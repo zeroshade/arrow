@@ -625,3 +625,16 @@ func TestRecordReaderStream(t *testing.T) {
 		assert.Equal(t, "baz", rec.Column(1).(*array.String).Value(2))
 	}
 }
+
+func TestExportSchema(t *testing.T) {
+	var sc CArrowSchema
+
+	schema := arrow.Field{Name: "foo", Type: arrow.PrimitiveTypes.Int32, Nullable: true, Metadata: arrow.NewMetadata([]string{"key1"}, []string{"value1"})}
+	exportField(schema, &sc)
+
+	f, err := ImportCArrowField(&sc)
+	assert.NoError(t, err)
+	assert.True(t, schema.Equal(f))
+	releaseSchema(&sc)
+	assert.Nil(t, sc.release)
+}

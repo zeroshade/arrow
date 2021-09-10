@@ -22,6 +22,7 @@ import (
 	"github.com/apache/arrow/go/arrow"
 	"github.com/apache/arrow/go/arrow/array"
 	"github.com/apache/arrow/go/arrow/arrio"
+	"github.com/apache/arrow/go/arrow/memory"
 	"golang.org/x/xerrors"
 )
 
@@ -157,4 +158,32 @@ func ImportCArrayStream(stream *CArrowArrayStream, schema *arrow.Schema) arrio.R
 	out := &nativeCRecordBatchReader{schema: schema}
 	initReader(out, stream)
 	return out
+}
+
+func ExportArrowSchema(schema *arrow.Schema, out *CArrowSchema) {
+	dummy := arrow.Field{Type: arrow.StructOf(schema.Fields()...), Metadata: schema.Metadata()}
+	exportField(dummy, out)
+}
+
+func ExportArrowRecordBatch(rb array.Record, out *CArrowArray, outSchema *CArrowSchema) {
+	children := make([]*array.Data, rb.NumCols())
+	for i := range rb.Columns() {
+		children[i] = rb.Column(i).Data()
+	}
+
+	data := array.NewData(arrow.StructOf(rb.Schema().Fields()...), int(rb.NumRows()), []*memory.Buffer{nil},
+		children, 0, 0)
+	defer data.Release()
+	arr := array.NewStructData(data)
+	defer arr.Release()
+
+	if outSchema != nil {
+		ExportArrowSchema(rb.Schema(), outSchema)
+	}
+
+	exportArray(arr, out, nil)
+}
+
+func ExportArrowArray(arr array.Interface, out *CArrowArray, outSchema *CArrowSchema) {
+	exportArray(arr, out, outSchema)
 }

@@ -70,3 +70,5 @@ add_arrow_benchmark(function_benchmark PREFIX "arrow-compute")
 add_subdirectory(kernels)
 
 add_subdirectory(exec)
+
+add_subdirectory(c)

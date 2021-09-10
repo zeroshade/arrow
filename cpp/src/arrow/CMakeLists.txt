@@ -415,7 +415,8 @@ if(ARROW_COMPUTE)
        compute/exec/key_map.cc
        compute/exec/key_compare.cc
        compute/exec/key_encode.cc
-       compute/exec/util.cc)
+       compute/exec/util.cc
+       compute/c/compute.cc)
 
   append_avx2_src(compute/kernels/aggregate_basic_avx2.cc)
   append_avx512_src(compute/kernels/aggregate_basic_avx512.cc)

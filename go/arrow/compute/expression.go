@@ -17,6 +17,7 @@
 package compute
 
 import (
+	"fmt"
 	"reflect"
 	"strconv"
 
@@ -202,6 +203,10 @@ func NewRef(ref FieldRef) Expression {
 	return &Parameter{ref: &ref, index: -1}
 }
 
+func NewFieldRef(field string) Expression {
+	return NewRef(NewFieldNameRef(field))
+}
+
 func NewCall(name string, args []Expression, opts *FunctionOptions) Expression {
 	return &Call{funcName: name, args: args, options: opts}
 }
@@ -266,17 +271,19 @@ func (m *MakeStructOptions) ToStructScalar(mem memory.Allocator) (names []string
 
 	for _, md := range m.FieldMetadata {
 		bldr.Append(true)
-		if m != nil {
+		if md != nil {
 			kbldr.AppendStringValues(md.Keys(), nil)
 			ibldr.AppendStringValues(md.Values(), nil)
 		}
 	}
 
-	names = []string{"field_names", "field_nullability", "field_metadata"}
+	names = []string{"field_names", "field_nullability", "field_metadata", "_type_name"}
 	values = []scalar.Scalar{
 		scalar.NewListScalar(namesbld.NewArray()),
 		scalar.NewListScalar(nullbldr.NewArray()),
-		scalar.NewMapScalar(bldr.NewMapArray().ListValues())}
+		scalar.NewListScalar(bldr.NewMapArray()),
+		scalar.NewBinaryScalar(memory.NewBufferBytes([]byte(m.typename())), arrow.BinaryTypes.Binary),
+	}
 	return
 }
 
@@ -291,8 +298,13 @@ func (n *NullOptions) ToStructScalar(mem memory.Allocator) (names []string, valu
 }
 
 func Project(values []Expression, names []string) Expression {
+	nulls := make([]bool, len(names))
+	for i := range nulls {
+		nulls[i] = true
+	}
+	meta := make([]*arrow.Metadata, len(names))
 	return NewCall("make_struct", values,
-		&FunctionOptions{&MakeStructOptions{FieldNames: names}})
+		&FunctionOptions{&MakeStructOptions{FieldNames: names, FieldNullability: nulls, FieldMetadata: meta}})
 }
 
 func Equal(lhs, rhs Expression) Expression {
@@ -440,6 +452,8 @@ func SerializeExpr(expr Expression, mem memory.Allocator) *memory.Buffer {
 	metadata := arrow.NewMetadata(metaKey, metaValue)
 	rec := array.NewRecord(arrow.NewSchema(fields, &metadata), cols, 1)
 	defer rec.Release()
+
+	fmt.Println(rec)
 
 	buf := &BufferSeeker{mem: mem}
 	wr, err := ipc.NewFileWriter(buf, ipc.WithSchema(rec.Schema()))
