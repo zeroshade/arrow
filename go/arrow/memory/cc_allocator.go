@@ -20,7 +20,6 @@
 package memory
 
 import (
-	"fmt"
 	"runtime"
 
 	"github.com/apache/arrow/go/arrow/memory/internal/cgoarrow"
@@ -32,13 +31,11 @@ type CgoArrowAllocator struct {
 
 func (alloc *CgoArrowAllocator) Allocate(size int) []byte {
 	b := cgoarrow.CgoPoolAlloc(alloc.pool, size)
-	fmt.Printf("%p\n", b)
 	return b
 }
 
 func (alloc *CgoArrowAllocator) Free(b []byte) {
 	cgoarrow.CgoPoolFree(alloc.pool, b)
-	fmt.Printf("%p\n", b)
 }
 
 func (alloc *CgoArrowAllocator) Reallocate(size int, b []byte) []byte {
@@ -50,7 +47,6 @@ func (alloc *CgoArrowAllocator) Reallocate(size int, b []byte) []byte {
 		// C won't zero initialize the memory.
 		Set(out[oldSize:], 0)
 	}
-	fmt.Printf("%p\n", out)
 	return out
 }
 
