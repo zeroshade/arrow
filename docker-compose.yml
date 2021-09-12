@@ -113,6 +113,7 @@ x-hierarchy:
       - debian-ruby
     - debian-python
   - debian-go:
+    - debian-go-cgo
     - debian-go-cgo-python
   - debian-java:
     - debian-java-jni
