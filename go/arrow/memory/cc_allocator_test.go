@@ -39,7 +39,7 @@ func TestCgoArrowAllocator_Allocate(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			alloc := NewCgoArrowAllocator(true)
+			alloc := NewCgoArrowAllocator()
 			buf := alloc.Allocate(test.sz)
 			assert.NotNil(t, buf)
 			assert.Len(t, buf, test.sz)
@@ -62,7 +62,7 @@ func TestCgoArrowAllocator_Reallocate(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			alloc := NewCgoArrowAllocator(true)
+			alloc := NewCgoArrowAllocator()
 			buf := alloc.Allocate(test.sz1)
 			for i := range buf {
 				buf[i] = byte(i & 0xFF)

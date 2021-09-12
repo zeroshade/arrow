@@ -1199,6 +1199,24 @@ services:
         /arrow/ci/scripts/go_build.sh /arrow &&
         /arrow/ci/scripts/go_test.sh /arrow"
 
+  debian-go-cgo:
+    # Usage:
+    #   docker-compose build debian-go-cgo
+    #   docker-compose run debian-go-cgo
+    image: ${REPO}:${ARCH}-debian-10-go-${GO}-cgo
+    build:
+      context: .
+      dockerfile: ci/docker/debian-10-go-cgo.dockerfile
+      cache_from:
+        - ${REPO}:${ARCH}-debian-10-go-${GO}-cgo
+      args:
+        arch: ${ARCH}
+        go: ${GO}
+    shm_size: *shm-size
+    volumes: *debian-volumes
+    command: &go-cgo-command >
+        /bin/bash -c "/arrow/ci/scripts/go_cgo_test.sh /arrow"
+    
   debian-go-cgo-python:
     # Usage:
     #   docker-compose build debian-go-cgo-python

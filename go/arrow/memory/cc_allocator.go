@@ -58,8 +58,8 @@ func (alloc *CgoArrowAllocator) AssertSize(t TestingT, sz int) {
 	}
 }
 
-func NewCgoArrowAllocator(logging bool) Allocator {
-	alloc := &CgoArrowAllocator{pool: cgoarrow.NewCgoArrowAllocator(logging)}
+func NewCgoArrowAllocator() Allocator {
+	alloc := &CgoArrowAllocator{pool: cgoarrow.NewCgoArrowAllocator(enableLogging)}
 	runtime.SetFinalizer(alloc, func(a *CgoArrowAllocator) { cgoarrow.ReleaseCGOMemPool(a.pool) })
 	return alloc
 }
