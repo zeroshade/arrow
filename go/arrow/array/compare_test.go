@@ -529,3 +529,18 @@ func TestRecordApproxEqual(t *testing.T) {
 		})
 	}
 }
+
+func TestChunkedEqual(t *testing.T) {
+	for name, recs := range arrdata.Records {
+		t.Run(name, func(t *testing.T) {
+			tbl := array.NewTableFromRecords(recs[0].Schema(), recs)
+			defer tbl.Release()
+
+			for i := 0; i < int(tbl.NumCols()); i++ {
+				if !array.ChunkedEqual(tbl.Column(i).Data(), tbl.Column(i).Data()) && name != "nulls" {
+					t.Fatalf("identical chunked arrays should compare as equal:\narr:%v\n", tbl.Column(i).Data())
+				}
+			}
+		})
+	}
+}
