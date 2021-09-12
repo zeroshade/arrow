@@ -20,7 +20,7 @@
 package cgoarrow
 
 // #cgo !windows pkg-config: arrow
-// #cgo windows LDFLAGS: -larrow
+// #cgo windows LDFLAGS: -larrow -static
 // #include "allocator.h"
 import "C"
 import (

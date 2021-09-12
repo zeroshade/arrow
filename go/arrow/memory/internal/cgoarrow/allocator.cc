@@ -18,6 +18,10 @@
 // +build cgo
 // +build ccalloc
 
+#if defined(_WIN32) || defined(__CYGWIN__)
+#define ARROW_STATIC 1
+#endif 
+
 #include <memory>
 #include <iostream>
 #include "allocator.h"
