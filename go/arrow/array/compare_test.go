@@ -591,6 +591,7 @@ func TestChunkedApproxEqual(t *testing.T) {
 	)
 	defer c2.Release()
 
+	assert.True(t, array.ChunkedEqual(c1, c2))
 	assert.True(t, array.ChunkedApproxEqual(c1, c2))
 }
 
