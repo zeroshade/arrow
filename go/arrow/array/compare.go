@@ -137,11 +137,13 @@ func chunkedBinaryApply(left, right *Chunked, fn func(left Interface, lbeg, lend
 			break
 		}
 
-		sz := int64(min(cleft.Len(), cright.Len()))
+		sz := int64(min(cleft.Len()-int(leftPos), cright.Len()-int(rightPos)))
 		pos += sz
-		if !fn(cleft, leftPos, sz, cright, rightPos, sz) {
+		if !fn(cleft, leftPos, leftPos+sz, cright, rightPos, rightPos+sz) {
 			return
 		}
+		leftPos += sz
+		rightPos += sz
 	}
 }
 
