@@ -577,6 +577,7 @@ func MakeArrayFromScalar(sc Scalar, length int, mem memory.Allocator) (array.Int
 
 	finishFixedWidth := func(data []byte) *array.Data {
 		buffer := createBuffer(data)
+		defer buffer.Release()
 		return array.NewData(sc.DataType(), length, []*memory.Buffer{nil, buffer}, nil, 0, 0)
 	}
 
@@ -589,6 +590,7 @@ func MakeArrayFromScalar(sc Scalar, length int, mem memory.Allocator) (array.Int
 			c = 0xFF
 		}
 		memory.Set(data.Bytes(), c)
+		defer data.Release()
 		return array.NewBoolean(length, data, nil, 0), nil
 	case BinaryScalar:
 		if s.DataType().ID() == arrow.FIXED_SIZE_BINARY {
@@ -598,7 +600,9 @@ func MakeArrayFromScalar(sc Scalar, length int, mem memory.Allocator) (array.Int
 		}
 
 		valuesBuf := createBuffer(s.Data())
+		defer valuesBuf.Release()
 		offsetsBuf := createOffsets(int32(len(s.Data())))
+		defer offsetsBuf.Release()
 		data := array.NewData(sc.DataType(), length, []*memory.Buffer{nil, offsetsBuf, valuesBuf}, nil, 0, 0)
 		defer data.Release()
 		return array.MakeFromData(data), nil
@@ -619,6 +623,7 @@ func MakeArrayFromScalar(sc Scalar, length int, mem memory.Allocator) (array.Int
 		defer valueArray.Release()
 
 		offsetsBuf := createOffsets(int32(s.Value.Len()))
+		defer offsetsBuf.Release()
 		data := array.NewData(s.DataType(), length, []*memory.Buffer{nil, offsetsBuf}, []*array.Data{valueArray.Data()}, 0, 0)
 		defer data.Release()
 		return array.MakeFromData(data), nil
@@ -659,6 +664,7 @@ func MakeArrayFromScalar(sc Scalar, length int, mem memory.Allocator) (array.Int
 		defer valueArr.Release()
 
 		offsetsBuf := createOffsets(int32(structArr.Len()))
+		defer offsetsBuf.Release()
 
 		outStructArr := array.NewData(structArr.DataType(), keyArr.Len(), []*memory.Buffer{nil}, []*array.Data{keyArr.Data(), valueArr.Data()}, 0, 0)
 		defer outStructArr.Release()
