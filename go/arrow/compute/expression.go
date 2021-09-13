@@ -17,7 +17,6 @@
 package compute
 
 import (
-	"fmt"
 	"reflect"
 	"strconv"
 
@@ -412,15 +411,7 @@ func SerializeExpr(expr Expression, mem memory.Allocator) *memory.Buffer {
 				for _, f := range st.Value {
 					switch s := f.(type) {
 					case scalar.ListScalar:
-						defer func(sc scalar.ListScalar) {
-							if sc.List().DataType().ID() == arrow.MAP {
-								d := sc.List().(*array.Map).ListValues().Data()
-								sc.List().Release()
-								fmt.Printf("%+v\n", d)
-							} else {
-								sc.List().Release()
-							}
-						}(s)
+						defer s.List().Release()
 					case scalar.BinaryScalar:
 						defer s.Release()
 					}
