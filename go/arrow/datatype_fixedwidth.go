@@ -54,10 +54,10 @@ type (
 )
 
 const (
-	Nanosecond TimeUnit = iota
-	Microsecond
+	Second TimeUnit = iota
 	Millisecond
-	Second
+	Microsecond
+	Nanosecond
 )
 
 func (u TimeUnit) Multiplier() time.Duration {

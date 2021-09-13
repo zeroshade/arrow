@@ -304,9 +304,11 @@ func MakeScalar(val interface{}) Scalar {
 		return NewMonthIntervalScalar(v)
 	case arrow.DayTimeInterval:
 		return NewDayTimeIntervalScalar(v)
+	case arrow.TimeUnit:
+		return NewUint32Scalar(uint32(v))
 	}
 
-	panic(xerrors.Errorf("makescalar not implemented for type value %#v", val))
+	panic(xerrors.Errorf("makescalar not implemented for type value %#T", val))
 }
 
 // MakeIntegerScalar is a helper function for creating an integer scalar of a
