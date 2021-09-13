@@ -44,8 +44,8 @@ func TestCgoArrowAllocator_Allocate(t *testing.T) {
 			assert.NotNil(t, buf)
 			assert.Len(t, buf, test.sz)
 
-			alloc.(*CgoArrowAllocator).AssertSize(t, test.sz)
-			defer alloc.(*CgoArrowAllocator).AssertSize(t, 0)
+			alloc.AssertSize(t, test.sz)
+			defer alloc.AssertSize(t, 0)
 			defer alloc.Free(buf)
 		})
 	}
@@ -74,8 +74,8 @@ func TestCgoArrowAllocator_Reallocate(t *testing.T) {
 			newBuf := alloc.Reallocate(test.sz2, buf)
 			assert.Equal(t, exp, newBuf)
 
-			alloc.(*CgoArrowAllocator).AssertSize(t, test.sz2)
-			defer alloc.(*CgoArrowAllocator).AssertSize(t, 0)
+			alloc.AssertSize(t, test.sz2)
+			defer alloc.AssertSize(t, 0)
 			defer alloc.Free(newBuf)
 		})
 	}
