@@ -56,6 +56,14 @@ type (
 	CArrowArrayStream = C.struct_ArrowArrayStream
 )
 
+func CArrowArrayRelease(arr *CArrowArray) {
+	C.ArrowArrayRelease(arr)
+}
+
+func CArrowSchemaRelease(schema *CArrowSchema) {
+	C.ArrowSchemaRelease(schema)
+}
+
 // Map from the defined strings to their corresponding arrow.DataType interface
 // object instances, for types that don't require params.
 var formatToSimpleType = map[string]arrow.DataType{
