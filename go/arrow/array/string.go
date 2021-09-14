@@ -19,6 +19,7 @@ package array
 import (
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 	"unsafe"
 
@@ -57,7 +58,28 @@ func (a *String) Value(i int) string {
 }
 
 // ValueOffset returns the offset of the value at index i.
-func (a *String) ValueOffset(i int) int { return int(a.offsets[i]) }
+func (a *String) ValueOffset(i int) int { return int(a.offsets[i+a.array.data.offset]) }
+
+func (a *String) ValueOffsets() []int32 {
+	beg := a.array.data.offset
+	end := beg + a.array.data.length + 1
+	return a.offsets[beg:end]
+}
+
+func (a *String) ValueBytes() (out []byte) {
+	beg := a.array.data.offset
+	end := beg + a.array.data.length + 1
+
+	values := a.values[beg:end]
+
+	v := (*reflect.StringHeader)(unsafe.Pointer(&values))
+	s := (*reflect.SliceHeader)(unsafe.Pointer(&out))
+
+	s.Data = v.Data
+	s.Len = v.Len
+	s.Cap = v.Len
+	return
+}
 
 func (a *String) String() string {
 	o := new(strings.Builder)
