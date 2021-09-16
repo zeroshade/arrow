@@ -19,25 +19,35 @@ package dataset
 import (
 	"context"
 	"fmt"
-	"io"
-	"math"
 
 	"github.com/apache/arrow/go/arrow"
 	"github.com/apache/arrow/go/arrow/array"
 	"github.com/apache/arrow/go/arrow/compute"
 	"github.com/apache/arrow/go/arrow/memory"
-	"golang.org/x/xerrors"
 )
 
-type RecordGenerator <-chan array.Record
+type RecordMessage struct {
+	Record array.Record
+	Err    error
+}
 
-type RecordIterator func() (array.Record, error)
+type RecordGenerator <-chan RecordMessage
 
 type ScanTaskIterator func() (ScanTask, error)
 
-type FragmentIterator func() (Fragment, error)
+type FragmentMessage struct {
+	Fragment Fragment
+	Err      error
+}
 
-var emptyFragmentItr = func() (Fragment, error) { return nil, nil }
+type FragmentIterator <-chan FragmentMessage
+
+type ScanTaskMessage struct {
+	Task ScanTask
+	Err  error
+}
+
+type ScanTaskGenerator <-chan ScanTaskMessage
 
 type FragmentScanOptions interface {
 	TypeName() string
@@ -70,7 +80,7 @@ func DefaultScanOptions() *ScanOptions {
 }
 
 type ScanTask interface {
-	Execute() RecordIterator
+	Execute() RecordGenerator
 	Options() *ScanOptions
 	Fragment() Fragment
 }
@@ -83,45 +93,13 @@ type scanTask struct {
 func (s *scanTask) Options() *ScanOptions { return s.opts }
 func (s *scanTask) Fragment() Fragment    { return s.fragment }
 
-type InMemoryScanTask struct {
-	scanTask
-	batches []array.Record
-}
-
-func (i *InMemoryScanTask) Execute() RecordIterator {
-	return makeRecordIterator(i.batches)
-}
-
 type Fragment interface {
 	fmt.Stringer
 	ReadPhysicalSchema() (*arrow.Schema, error)
 	Scan(opts *ScanOptions) (ScanTaskIterator, error)
-	ScanBatchesAsync(opts *ScanOptions) (RecordIterator, error)
 	TypeName() string
 	PartitionExpr() compute.Expression
 }
-
-type InMemoryFragment struct {
-	schema    *arrow.Schema
-	batches   []array.Record
-	partition compute.Expression
-}
-
-func NewInMemoryFragment(batches []array.Record) *InMemoryFragment {
-	return &InMemoryFragment{schema: batches[0].Schema(), batches: batches, partition: compute.NewLiteral(true)}
-}
-
-func (f *InMemoryFragment) ReadPhysicalSchema() (*arrow.Schema, error) {
-	return f.schema, nil
-}
-
-func (f *InMemoryFragment) ScanBatchesAsync(opt *ScanOptions) (RecordIterator, error) {
-	return nil, nil
-}
-
-func (f *InMemoryFragment) TypeName() string                  { return "in-memory" }
-func (f *InMemoryFragment) PartitionExpr() compute.Expression { return f.partition }
-func (f *InMemoryFragment) String() string                    { return "" }
 
 func makeScanTaskItr(fn func(interface{}) (ScanTask, error), args func() (interface{}, error)) ScanTaskIterator {
 	return func() (ScanTask, error) {
@@ -133,17 +111,15 @@ func makeScanTaskItr(fn func(interface{}) (ScanTask, error), args func() (interf
 	}
 }
 
-func makeRecordIterator(recs []array.Record) RecordIterator {
-	i := 0
-	return func() (array.Record, error) {
-		if i >= len(recs) {
-			return nil, io.EOF
+func makeRecordGenerator(recs []array.Record) RecordGenerator {
+	gen := make(chan RecordMessage)
+	go func() {
+		defer close(gen)
+		for _, r := range recs {
+			gen <- RecordMessage{r, nil}
 		}
-
-		ret := recs[i]
-		i++
-		return ret, nil
-	}
+	}()
+	return gen
 }
 
 func min(a, b int64) int64 {
@@ -153,32 +129,8 @@ func min(a, b int64) int64 {
 	return b
 }
 
-func (in *InMemoryFragment) Scan(opts *ScanOptions) (ScanTaskIterator, error) {
-	batchSz := opts.BatchSize
-	recItr := makeRecordIterator(in.batches)
-	recordsFn := func() (interface{}, error) {
-		return recItr()
-	}
-	return makeScanTaskItr(func(i interface{}) (ScanTask, error) {
-		rb := i.(array.Record)
-		defer rb.Release()
-
-		nBatches := int(math.Ceil(float64(rb.NumRows()) / float64(batchSz)))
-
-		batches := make([]array.Record, nBatches)
-		for i := range batches {
-			start := batchSz * int64(i)
-			batches[i] = rb.NewSlice(start, min(rb.NumRows(), start+batchSz))
-		}
-
-		return &InMemoryScanTask{
-			scanTask: scanTask{opts: opts, fragment: in},
-			batches:  batches}, nil
-	}, recordsFn), nil
-}
-
 type datasetImpl interface {
-	getFragmentsImpl(predicate compute.Expression) (FragmentIterator, error)
+	getFragmentsImpl(predicate compute.BoundExpression) FragmentIterator
 
 	Schema() *arrow.Schema
 	TypeName() string
@@ -193,61 +145,41 @@ type Dataset struct {
 
 func (d *Dataset) PartitionExpr() compute.Expression { return d.partition }
 func (d *Dataset) GetFragments() (FragmentIterator, error) {
-	return d.GetFragmentsCond(compute.NewLiteral(true))
+	// .NewLiteral(true)
+	return d.GetFragmentsCond(compute.BoundExpression{})
 }
 
-func (d *Dataset) GetFragmentsCond(predicate compute.Expression) (FragmentIterator, error) {
-	pred, err := compute.SimplifyWithGuarantee(predicate, d.partition)
-	if err != nil {
-		return nil, err
-	}
+func (d *Dataset) GetFragmentsCond(predicate compute.BoundExpression) (FragmentIterator, error) {
+	// pred, err := compute.SimplifyWithGuarantee(predicate, d.partition)
+	// if err != nil {
+	// 	return nil, err
+	// }
 
-	if pred.IsSatisfiable() {
-		return d.datasetImpl.getFragmentsImpl(pred)
-	}
+	// if pred.IsSatisfiable() {
+	return d.datasetImpl.getFragmentsImpl(predicate), nil
+	// }
 
-	return emptyFragmentItr, nil
+	// return emptyFragmentItr, nil
 }
 
-func NewInMemoryDataset(schema *arrow.Schema, gen func() RecordIterator) *Dataset {
-	return &Dataset{
-		&inMemoryImpl{schema, gen},
-		compute.NewLiteral(true),
-	}
-}
+func GetFragmentsFromDatasets(ds []*Dataset, predicate compute.BoundExpression) FragmentIterator {
+	fragItr := make(chan FragmentMessage)
+	go func() {
+		defer close(fragItr)
+		for _, d := range ds {
+			itr, err := d.GetFragmentsCond(predicate)
+			if err != nil {
+				fragItr <- FragmentMessage{nil, err}
+				break
+			}
 
-func NewStaticInMemoryDataset(schema *arrow.Schema, recs []array.Record) *Dataset {
-	return NewInMemoryDataset(schema, func() RecordIterator { return makeRecordIterator(recs) })
-}
-
-type inMemoryImpl struct {
-	schema  *arrow.Schema
-	batches func() RecordIterator
-}
-
-func (i *inMemoryImpl) Schema() *arrow.Schema { return i.schema }
-func (i *inMemoryImpl) TypeName() string      { return "in-memory" }
-
-func (i *inMemoryImpl) ReplaceSchema(schema *arrow.Schema) (*Dataset, error) {
-	if err := checkProjectable(i.schema, schema); err != nil {
-		return nil, err
-	}
-
-	return &Dataset{&inMemoryImpl{schema, i.batches}, compute.NewLiteral(true)}, nil
-}
-
-func (i *inMemoryImpl) getFragmentsImpl(compute.Expression) (FragmentIterator, error) {
-	itr := i.batches()
-	return func() (Fragment, error) {
-		next, err := itr()
-		if err != nil {
-			return nil, err
+			for f := range itr {
+				fragItr <- f
+				if f.Err != nil {
+					return
+				}
+			}
 		}
-
-		if !next.Schema().Equal(i.schema) {
-			return nil, xerrors.Errorf("yielded batch had schema %s which did not match InMemory Source's: %s", next.Schema(), i.schema)
-		}
-
-		return NewInMemoryFragment([]array.Record{next}), nil
-	}, nil
+	}()
+	return fragItr
 }

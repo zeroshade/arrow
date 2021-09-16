@@ -343,12 +343,12 @@ func AndList(ops ...Expression) Expression {
 	return NewLiteral(true)
 }
 
-func Or(lhs, rhs Expression) Expression {
+func or(lhs, rhs Expression) Expression {
 	return NewCall("or_kleene", []Expression{lhs, rhs}, nil)
 }
 
-func OrList(ops ...Expression) Expression {
-	folded := foldLeft(Or, ops...)
+func Or(lhs, rhs Expression, ops ...Expression) Expression {
+	folded := foldLeft(or, append([]Expression{lhs, rhs}, ops...)...)
 	if folded != nil {
 		return folded
 	}

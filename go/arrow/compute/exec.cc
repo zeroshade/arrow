@@ -93,6 +93,7 @@ int arrow_compute_bound_expr_simplify_guarantee(BoundExpression expr,
 
     auto bound = retrieve_instance<arrow::compute::Expression>(expr);
     arrow::compute::SimplifyWithGuarantee(*bound, guarantee_result.MoveValueUnsafe());
+    return 0;
 }
 
 int arrow_compute_execute_scalar_expr(ExecContext ctx,

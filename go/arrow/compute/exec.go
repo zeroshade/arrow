@@ -98,6 +98,10 @@ type BoundExpression struct {
 	dt arrow.DataType
 }
 
+func (b BoundExpression) IsBound() bool {
+	return b.b != 0
+}
+
 func (b BoundExpression) Release() {
 	C.arrow_compute_bound_expr_release(b.b)
 }

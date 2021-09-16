@@ -64,12 +64,7 @@ func ConstantRecordBatchGenZeros(sz int, schema *arrow.Schema) array.Record {
 }
 
 func ConstantRecordBatchGenRepeat(rb array.Record, times int) array.RecordReader {
-	out := make([]array.Record, times)
-	for i := range out {
-		rb.Retain()
-		out[i] = rb
-	}
-	rdr, _ := array.NewRecordReader(rb.Schema(), out)
+	rdr, _ := array.NewRecordReader(rb.Schema(), createBatchList(rb, times))
 	return rdr
 }
 
@@ -85,6 +80,7 @@ type DatasetTestSuite struct {
 func TestDatasets(t *testing.T) {
 	suite.Run(t, new(InMemoryFragmentSuite))
 	suite.Run(t, new(InMemoryDatasetSuite))
+	suite.Run(t, new(UnionDatasetSuite))
 }
 
 type InMemoryFragmentSuite struct {
@@ -112,23 +108,18 @@ func (d *DatasetTestSuite) setSchema(sc *arrow.Schema) {
 }
 
 func (d *DatasetTestSuite) assertScanTaskEquals(expected array.RecordReader, task dataset.ScanTask, ensureDrained bool) {
-	itr := task.Execute()
-	for {
-		rb, err := itr()
-		if err != nil {
-			d.Nil(rb)
-			d.ErrorIs(err, io.EOF)
-			break
-		}
-		d.NotNil(rb)
-		defer rb.Release()
+	for rm := range task.Execute() {
+		d.NotNil(rm.Record)
+		d.NoError(rm.Err)
+		rb := rm.Record
 
 		d.True(expected.Next())
 		lhs := expected.Record()
 		d.NotNil(lhs)
-		defer lhs.Release()
 
 		d.True(array.RecordEqual(rb, lhs))
+		lhs.Release()
+		rb.Release()
 	}
 
 	if ensureDrained {
@@ -150,6 +141,33 @@ func (d *DatasetTestSuite) assertFragmentEquals(rdr array.RecordReader, f *datas
 		d.assertScanTaskEquals(rdr, task, false)
 	}
 
+	if ensureDrained {
+		d.False(rdr.Next())
+	}
+}
+
+func (d *DatasetTestSuite) assertScannerEquals(rdr array.RecordReader, scanner *dataset.Scanner, ensureDrained bool) {
+	ch := scanner.ScanBatches()
+	for rec := range ch {
+		d.True(rdr.Next())
+		lhs := rdr.Record()
+		d.NotNil(lhs)
+
+		d.True(array.RecordEqual(lhs, rec.RecordBatch))
+		lhs.Release()
+		rec.RecordBatch.Release()
+	}
+
+	if ensureDrained {
+		d.False(rdr.Next())
+	}
+}
+
+func (d *DatasetTestSuite) assertDatasetEquals(rdr array.RecordReader, ds *dataset.Dataset, ensureDrained bool) {
+	scanner, err := dataset.NewScanner(&d.opts, ds)
+	d.NoError(err)
+
+	d.assertScannerEquals(rdr, scanner, true)
 	if ensureDrained {
 		d.False(rdr.Next())
 	}
@@ -205,7 +223,7 @@ func (d *InMemoryDatasetSuite) TestReplaceSchema() {
 	rdr := ConstantRecordBatchGenRepeat(batch, nbatches)
 	defer rdr.Release()
 
-	ds := dataset.NewStaticInMemoryDataset(d.sc, createBatchList(batch, nbatches))
+	ds := dataset.NewInMemoryDataset(d.sc, createBatchList(batch, nbatches))
 
 	// drop field
 	_, err := ds.ReplaceSchema(arrow.NewSchema([]arrow.Field{{Name: "i32", Type: arrow.PrimitiveTypes.Int32, Nullable: true}}, nil))
@@ -226,4 +244,144 @@ func (d *InMemoryDatasetSuite) TestReplaceSchema() {
 	// add non-nullable field
 	_, err = ds.ReplaceSchema(arrow.NewSchema([]arrow.Field{{Name: "str", Type: arrow.BinaryTypes.String}}, nil))
 	d.ErrorIs(err, dataset.TypeError)
+}
+
+func (d *InMemoryDatasetSuite) TestGetFragments() {
+	const (
+		batchSize = 1024
+		nbatches  = 16
+	)
+
+	d.setSchema(arrow.NewSchema([]arrow.Field{
+		{Name: "i32", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+		{Name: "f64", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+	}, nil))
+	batch := ConstantRecordBatchGenZeros(batchSize, d.sc)
+	defer batch.Release()
+	rdr := ConstantRecordBatchGenRepeat(batch, nbatches)
+	defer rdr.Release()
+
+	ds := dataset.NewInMemoryDataset(d.sc, createBatchList(batch, nbatches))
+	d.assertDatasetEquals(rdr, ds, true)
+}
+
+type UnionDatasetSuite struct {
+	DatasetTestSuite
+}
+
+func (u *UnionDatasetSuite) TestReplaceSchema() {
+	const (
+		batchSize = 1
+		nbatches  = 1
+	)
+
+	u.setSchema(arrow.NewSchema([]arrow.Field{
+		{Name: "i32", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+		{Name: "f64", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+	}, nil))
+	batch := ConstantRecordBatchGenZeros(batchSize, u.sc)
+	defer batch.Release()
+
+	children := []*dataset.Dataset{
+		dataset.NewInMemoryDataset(u.sc, createBatchList(batch, nbatches)),
+		dataset.NewInMemoryDataset(u.sc, createBatchList(batch, nbatches)),
+	}
+	totalBatches := len(children) * nbatches
+	rdr := ConstantRecordBatchGenRepeat(batch, totalBatches)
+	defer rdr.Release()
+
+	union, err := dataset.NewUnionDataset(u.sc, children)
+	u.NoError(err)
+
+	u.assertDatasetEquals(rdr, union, true)
+
+	// drop field
+	_, err = union.ReplaceSchema(arrow.NewSchema([]arrow.Field{{Name: "i32", Type: arrow.PrimitiveTypes.Int32, Nullable: true}}, nil))
+	u.NoError(err)
+
+	// add field (will be materialized as null during projection)
+	_, err = union.ReplaceSchema(arrow.NewSchema([]arrow.Field{{Name: "str", Type: arrow.BinaryTypes.String, Nullable: true}}, nil))
+	u.NoError(err)
+
+	// incompatible type
+	_, err = union.ReplaceSchema(arrow.NewSchema([]arrow.Field{{Name: "i32", Type: arrow.BinaryTypes.String}}, nil))
+	u.ErrorIs(err, dataset.TypeError)
+
+	// incompatible nullability
+	_, err = union.ReplaceSchema(arrow.NewSchema([]arrow.Field{{Name: "f64", Type: arrow.PrimitiveTypes.Float64, Nullable: false}}, nil))
+	u.ErrorIs(err, dataset.TypeError)
+
+	// add non-nullable field
+	_, err = union.ReplaceSchema(arrow.NewSchema([]arrow.Field{{Name: "str", Type: arrow.BinaryTypes.String}}, nil))
+	u.ErrorIs(err, dataset.TypeError)
+}
+
+func createDatasetList(ds *dataset.Dataset, times int) []*dataset.Dataset {
+	children := make([]*dataset.Dataset, times)
+	for i := range children {
+		children[i] = ds
+	}
+	return children
+}
+
+func (u *UnionDatasetSuite) TestGetFragments() {
+	const (
+		batchSize               = 1024
+		childPerNode            = 2
+		completeBinaryTreeDepth = 4
+	)
+
+	u.setSchema(arrow.NewSchema([]arrow.Field{
+		{Name: "i32", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+		{Name: "f64", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+	}, nil))
+	batch := ConstantRecordBatchGenZeros(batchSize, u.sc)
+	defer batch.Release()
+
+	const nleaves = uint(1) << completeBinaryTreeDepth
+	rdr := ConstantRecordBatchGenRepeat(batch, int(nleaves))
+	defer rdr.Release()
+
+	// creates a complete binary tree of depth completeBinaryTreeDepth where
+	// the leaves are InMemoryDataset containing childPerNode Fragments
+	l1LeafDataset := dataset.NewInMemoryDataset(u.sc, createBatchList(batch, childPerNode))
+	l2LeafTreeDataset, err := dataset.NewUnionDataset(u.sc, createDatasetList(l1LeafDataset, childPerNode))
+	u.NoError(err)
+	l3MiddleTreeDataset, err := dataset.NewUnionDataset(u.sc, createDatasetList(l2LeafTreeDataset, childPerNode))
+	u.NoError(err)
+	rootDataset, err := dataset.NewUnionDataset(u.sc, createDatasetList(l3MiddleTreeDataset, childPerNode))
+	u.NoError(err)
+
+	for i := childPerNode; i < int(nleaves); i++ {
+		batch.Retain()
+	}
+
+	u.assertDatasetEquals(rdr, rootDataset, true)
+}
+
+func (u *UnionDatasetSuite) TestTrivialScan() {
+	const (
+		nbatches  = 16
+		batchSize = 1024
+	)
+
+	u.setSchema(arrow.NewSchema([]arrow.Field{
+		{Name: "i32", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+		{Name: "f64", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+	}, nil))
+	batch := ConstantRecordBatchGenZeros(batchSize, u.sc)
+	defer batch.Release()
+
+	children := []*dataset.Dataset{
+		dataset.NewInMemoryDataset(u.sc, createBatchList(batch, nbatches)),
+		dataset.NewInMemoryDataset(u.sc, createBatchList(batch, nbatches)),
+	}
+
+	totalBatches := len(children) * nbatches
+	rdr := ConstantRecordBatchGenRepeat(batch, totalBatches)
+	defer rdr.Release()
+
+	ds, err := dataset.NewUnionDataset(u.sc, children)
+	u.NoError(err)
+	u.assertDatasetEquals(rdr, ds, true)
 }

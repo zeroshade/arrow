@@ -19,6 +19,7 @@ package dataset
 import (
 	"github.com/apache/arrow/go/arrow"
 	"github.com/apache/arrow/go/arrow/compute"
+	"github.com/pkg/errors"
 	"golang.org/x/xerrors"
 )
 
@@ -35,18 +36,18 @@ func checkProjectable(from, to *arrow.Schema) error {
 				continue
 			}
 
-			return xerrors.Errorf("%w: field %s is not nullable but has type %s in origin schema", TypeError, f, arrow.NULL)
+			return errors.Wrapf(TypeError, "field %s is not nullable and does not exist in origin schema", f)
 		case fromField.Type.ID() == arrow.NULL:
 			// promotion from null to any type is supported
 			if f.Nullable {
 				continue
 			}
 
-			return xerrors.Errorf("%w: field %s is not nullable but has type %s in origin schema", TypeError, f, arrow.Null)
+			return errors.Wrapf(TypeError, "field %s is not nullable but has type %s in origin schema", f, arrow.Null)
 		case !arrow.TypeEqual(fromField.Type, f.Type):
-			return xerrors.Errorf("%w: fields had matching names but differing types: From: %s, To: %s", TypeError, fromField, f)
+			return errors.Wrapf(TypeError, "fields had matching names but differing types: From: %s, To: %s", fromField, f)
 		case fromField.Nullable && !f.Nullable:
-			return xerrors.Errorf("%w: field %s is not nullable but is not required in origin schema %s", TypeError, f, fromField)
+			return errors.Wrapf(TypeError, "field %s is not nullable but is not required in origin schema %s", f, fromField)
 		}
 	}
 	return nil
@@ -96,6 +97,16 @@ func SetProjectionNames(opts *ScanOptions, names []string) error {
 	exprs := make([]compute.Expression, len(names))
 	for i, n := range names {
 		exprs[i] = compute.NewFieldRef(n)
+	}
+	return SetProjectionExprs(opts, exprs, names)
+}
+
+func SetProjectionSchema(opts *ScanOptions, schema *arrow.Schema) error {
+	exprs := make([]compute.Expression, len(schema.Fields()))
+	names := make([]string, len(schema.Fields()))
+	for i := range exprs {
+		exprs[i] = compute.NewFieldRef(schema.Field(i).Name)
+		names[i] = schema.Field(i).Name
 	}
 	return SetProjectionExprs(opts, exprs, names)
 }
