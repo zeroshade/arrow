@@ -51,6 +51,17 @@ void arrow_compute_release_context(ExecContext ctx);
 int64_t arrow_compute_get_exec_chunksize(ExecContext ctx);
 void arrow_compute_set_exec_chunksize(ExecContext ctx, int64_t chunksize);
 
+typedef uintptr_t BoundExpression;
+
+BoundExpression arrow_compute_bind_expr(ExecContext ctx, struct ArrowSchema* schema,
+    const uint8_t* serialized_expr, const int serialized_len);
+
+void arrow_compute_bound_expr_type(BoundExpression bound, struct ArrowSchema* out);
+void arrow_compute_bound_expr_release(BoundExpression bound);
+int arrow_compute_bound_expr_simplify_guarantee(BoundExpression expr, 
+    const uint8_t* serialized_guarantee, const int serialized_len,
+    BoundExpression* out);
+
 int arrow_compute_execute_scalar_expr(ExecContext ctx, 
     struct ArrowComputeInputOutput* partial_input,
     const uint8_t* serialized_expr, const int serialized_len,

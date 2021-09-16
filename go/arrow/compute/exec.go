@@ -92,3 +92,38 @@ func ExecuteScalarExpr(ctx context.Context, mem memory.Allocator, rb array.Recor
 	}
 	return NewDatum(arr), nil
 }
+
+type BoundExpression struct {
+	b  C.BoundExpression
+	dt arrow.DataType
+}
+
+func (b BoundExpression) Release() {
+	C.arrow_compute_bound_expr_release(b.b)
+}
+
+func (b BoundExpression) Type() (arrow.DataType, error) {
+	if b.dt == nil {
+		var cschema C.struct_ArrowSchema
+		C.arrow_compute_bound_expr_type(b.b, &cschema)
+		field, err := cdata.ImportCArrowField(convCSchema(&cschema))
+		if err != nil {
+			return nil, err
+		}
+		b.dt = field.Type
+	}
+	return b.dt, nil
+}
+
+func BindExpression(ctx context.Context, mem memory.Allocator, expr Expression, schema *arrow.Schema) BoundExpression {
+	ec := ctx.Value(execCtxKey{}).(C.ExecContext)
+	buf := SerializeExpr(expr, mem)
+	defer buf.Release()
+
+	var cschema C.struct_ArrowSchema
+	cdata.ExportArrowSchema(schema, convCSchema(&cschema))
+	defer cdata.CArrowSchemaRelease(convCSchema(&cschema))
+
+	boundExpr := C.arrow_compute_bind_expr(ec, &cschema, (*C.uint8_t)(unsafe.Pointer(&buf.Bytes()[0])), C.int(buf.Len()))
+	return BoundExpression{boundExpr, nil}
+}

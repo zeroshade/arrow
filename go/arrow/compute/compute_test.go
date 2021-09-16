@@ -231,3 +231,25 @@ func TestStrptimeCallExpr(t *testing.T) {
 	assert.True(t, arr.IsNull(1))
 	assert.Equal(t, arrow.Timestamp(-2179267200000), arr.Value(2))
 }
+
+func TestBindExpression(t *testing.T) {
+	expr := Project([]Expression{NewFieldRef("i32"), NewFieldRef("f64")}, []string{"i32", "f64"})
+
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "i32", Type: arrow.PrimitiveTypes.Int32},
+		{Name: "i64", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "f64", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+	}, nil)
+
+	ctx := ExecContext(context.Background())
+	defer ReleaseContext(ctx)
+	bound := BindExpression(ctx, memory.DefaultAllocator, expr, schema)
+	defer bound.Release()
+
+	dt, err := bound.Type()
+	assert.NoError(t, err)
+	i32 := schema.Field(0)
+	i32.Nullable = true
+	exp := arrow.StructOf(i32, schema.Field(2))
+	assert.True(t, arrow.TypeEqual(dt, exp), dt.(*arrow.StructType).String(), exp.String())
+}

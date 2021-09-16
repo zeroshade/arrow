@@ -46,6 +46,55 @@ void arrow_compute_set_exec_chunksize(ExecContext ctx, int64_t chunksize) {
     return exec_context->set_exec_chunksize(chunksize);
 }
 
+BoundExpression arrow_compute_bind_expr(ExecContext ctx, struct ArrowSchema* schema,
+                            const uint8_t* serialized_expr, const int serialized_len) {
+    auto exec_context = retrieve_instance<arrow::compute::ExecContext>(ctx);
+    auto expr = arrow::compute::Deserialize(std::make_shared<arrow::Buffer>(serialized_expr, serialized_len));
+
+    if (!expr.ok()) {
+        std::cerr << "msg: " << expr.status().message() << std::endl;
+        return 0;
+    }
+
+    auto schema_res = arrow::ImportSchema(schema);
+    if (!schema_res.ok()) {
+        std::cerr << "msg: " << schema_res.status().message() << std::endl;
+        return 0;
+    }
+
+    auto expr_result = expr.ValueUnsafe().Bind(*schema_res.ValueUnsafe(), exec_context.get());
+    if (!expr_result.ok()) {
+        std::cerr << "msg: " << expr.status().message() << std::endl;
+        return 0;
+    }
+
+    std::shared_ptr<arrow::compute::Expression> bound_expr = std::make_shared<arrow::compute::Expression>(expr_result.MoveValueUnsafe());
+    return create_ref(bound_expr);
+}
+
+void arrow_compute_bound_expr_type(BoundExpression bound, struct ArrowSchema* out) {
+    auto expr = retrieve_instance<arrow::compute::Expression>(bound);
+    arrow::ExportType(*(expr->type()), out);
+}
+
+void arrow_compute_bound_expr_release(BoundExpression bound) {
+    release_ref<arrow::compute::Expression>(bound);
+}
+
+int arrow_compute_bound_expr_simplify_guarantee(BoundExpression expr, 
+    const uint8_t* serialized_guarantee, const int serialized_len,
+    BoundExpression* out) {
+
+    auto guarantee_result = arrow::compute::Deserialize(std::make_shared<arrow::Buffer>(serialized_guarantee, serialized_len));
+    if (!guarantee_result.ok()) {
+        std::cerr << "msg: " << guarantee_result.status().message() << std::endl;
+        return 1;
+    }
+
+    auto bound = retrieve_instance<arrow::compute::Expression>(expr);
+    arrow::compute::SimplifyWithGuarantee(*bound, guarantee_result.MoveValueUnsafe());
+}
+
 int arrow_compute_execute_scalar_expr(ExecContext ctx,
                                   struct ArrowComputeInputOutput* partial_input,
                                   const uint8_t* serialized_expr, const int serialized_len,

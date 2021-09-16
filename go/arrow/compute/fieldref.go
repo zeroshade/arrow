@@ -18,10 +18,13 @@ package compute
 
 import (
 	"fmt"
+	"hash/maphash"
+	"math/bits"
 	"reflect"
 	"strconv"
 	"strings"
 	"unicode"
+	"unsafe"
 
 	"github.com/apache/arrow/go/arrow"
 	"github.com/apache/arrow/go/arrow/array"
@@ -149,6 +152,21 @@ func (f FieldPath) GetColumn(batch array.Record) (array.Interface, error) {
 	return f.getArray(batch.Columns())
 }
 
+func (f FieldPath) hash(h *maphash.Hash) {
+	raw := (*reflect.SliceHeader)(unsafe.Pointer(&f)).Data
+
+	var b []byte
+	s := (*reflect.SliceHeader)(unsafe.Pointer(&b))
+	s.Data = raw
+	if bits.UintSize == 32 {
+		s.Len = arrow.Int32Traits.BytesRequired(len(f))
+	} else {
+		s.Len = arrow.Int64Traits.BytesRequired(len(f))
+	}
+	s.Cap = s.Len
+	h.Write(b)
+}
+
 func NewFieldRefFromDotPath(dotpath string) (out FieldRef, err error) {
 	if len(dotpath) == 0 {
 		return out, xerrors.New("dotpath was empty")
@@ -220,6 +238,14 @@ type FieldRef struct {
 	impl fieldRefImpl
 }
 
+func (f FieldRef) Hash() uint64 {
+	h := maphash.Hash{}
+	f.hash(&h)
+	return h.Sum64()
+}
+
+func (f FieldRef) hash(h *maphash.Hash) { f.impl.hash(h) }
+
 func (f *FieldRef) IsName() bool {
 	_, ok := f.impl.(fieldNameRef)
 	return ok
@@ -289,6 +315,17 @@ func (f FieldRef) FindAllField(field arrow.Field) []FieldPath {
 	return f.impl.findAll(getFields(field.Type))
 }
 
+func (f FieldRef) FindOneOrNone(schema *arrow.Schema) (FieldPath, error) {
+	matches := f.FindAll(schema.Fields())
+	if len(matches) > 1 {
+		return nil, xerrors.Errorf("multiple matches for %s in %s", f, schema)
+	}
+	if len(matches) == 0 {
+		return FieldPath{}, nil
+	}
+	return matches[0], nil
+}
+
 func (f FieldRef) FindOneOrNoneRecord(root array.Record) (FieldPath, error) {
 	matches := f.FindAll(root.Schema().Fields())
 	if len(matches) > 1 {
@@ -296,6 +333,17 @@ func (f FieldRef) FindOneOrNoneRecord(root array.Record) (FieldPath, error) {
 	}
 	if len(matches) == 0 {
 		return FieldPath{}, nil
+	}
+	return matches[0], nil
+}
+
+func (f FieldRef) FindOne(schema *arrow.Schema) (FieldPath, error) {
+	matches := f.FindAll(schema.Fields())
+	if len(matches) == 0 {
+		return nil, xerrors.Errorf("no match for %s in %s", f, schema)
+	}
+	if len(matches) > 1 {
+		return nil, xerrors.Errorf("multiple matches for %s in %s", f, schema)
 	}
 	return matches[0], nil
 }
@@ -310,6 +358,26 @@ func (f FieldRef) GetAllColumns(root array.Record) ([]array.Interface, error) {
 		out = append(out, n)
 	}
 	return out, nil
+}
+
+func (f FieldRef) GetOne(schema *arrow.Schema) (*arrow.Field, error) {
+	match, err := f.FindOne(schema)
+	if err != nil {
+		return nil, err
+	}
+
+	return match.GetFieldFromSlice(schema.Fields())
+}
+
+func (f FieldRef) GetOneOrNone(schema *arrow.Schema) (*arrow.Field, error) {
+	match, err := f.FindOneOrNone(schema)
+	if err != nil {
+		return nil, err
+	}
+	if len(match) == 0 {
+		return nil, nil
+	}
+	return match.GetFieldFromSlice(schema.Fields())
 }
 
 func (f FieldRef) GetOneColumnOrNone(root array.Record) (array.Interface, error) {
@@ -335,6 +403,8 @@ func (ref fieldNameRef) findAll(fields []arrow.Field) []FieldPath {
 	return out
 }
 
+func (ref fieldNameRef) hash(h *maphash.Hash) { h.WriteString(string(ref)) }
+
 type fieldRefList []FieldRef
 
 type matches struct {
@@ -350,6 +420,12 @@ func (m *matches) add(prefix, suffix FieldPath, fields []arrow.Field) {
 
 	m.refs = append(m.refs, f)
 	m.prefixes = append(m.prefixes, append(prefix, suffix...))
+}
+
+func (ref fieldRefList) hash(h *maphash.Hash) {
+	for _, r := range ref {
+		r.hash(h)
+	}
 }
 
 func (ref fieldRefList) findAll(fields []arrow.Field) []FieldPath {
@@ -373,4 +449,5 @@ func (ref fieldRefList) findAll(fields []arrow.Field) []FieldPath {
 
 type fieldRefImpl interface {
 	findAll(fields []arrow.Field) []FieldPath
+	hash(h *maphash.Hash)
 }

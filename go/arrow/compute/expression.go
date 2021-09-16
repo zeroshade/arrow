@@ -125,6 +125,10 @@ type FunctionOptions struct {
 	opt funcopt
 }
 
+func NewFunctionOption(opt funcopt) *FunctionOptions {
+	return &FunctionOptions{opt}
+}
+
 func (f FunctionOptions) ToStructScalar(mem memory.Allocator) (*scalar.Struct, error) {
 	st, err := scalar.ToScalar(f.opt, mem)
 	if err != nil {
@@ -443,4 +447,94 @@ func SerializeExpr(expr Expression, mem memory.Allocator) *memory.Buffer {
 	wr.Write(rec)
 	wr.Close()
 	return buf.buf
+}
+
+// func FlattenAssociativeChain(expr Expression) (out, fringe []Expression, wasLeftFold bool) {
+// 	wasLeftFold = true
+// 	out = []Expression{expr}
+// 	call := expr.(*Call)
+
+// 	fringe = call.args
+// 	idx := 0
+// 	for idx < len(fringe) {
+// 		subCall, ok := fringe[idx].(*Call)
+// 		if !ok || subCall == nil || subCall.funcName != call.funcName {
+// 			idx++
+// 			continue
+// 		}
+
+// 		if idx != 0 {
+// 			wasLeftFold = false
+// 		}
+
+// 		out = append(out, fringe[idx])
+// 		end := fringe[idx+1:]
+// 		fringe = append(fringe[:idx], subCall.args...)
+// 		fringe = append(fringe, end...)
+// 	}
+
+// 	return
+// }
+
+// func GuaranteeConjunctionMembers(truePred Expression) []Expression {
+// 	guarantee, ok := truePred.(*Call)
+// 	if !ok || guarantee.funcName != "and_kleene" {
+// 		return []Expression{truePred}
+// 	}
+
+// 	_, ret, _ := FlattenAssociativeChain(truePred)
+// 	return ret
+// }
+
+// type knownValues map[uint64]struct {
+// 	ref   *FieldRef
+// 	datum Datum
+// }
+
+// func ExtractKnownFieldValuesImpl(members []Expression) (out []Expression, known knownValues) {
+// 	out = make([]Expression, 0)
+// 	known = make(knownValues)
+// 	for _, m := range members {
+// 		call, ok := m.(*Call)
+// 		if !ok {
+// 			out = append(out, m)
+// 			continue
+// 		}
+
+// 		if call.funcName == "equal" {
+// 			ref := call.args[0].FieldRef()
+// 			lit, ok := call.args[1].(*Literal)
+// 			if ref == nil || !ok {
+// 				out = append(out, m)
+// 			} else {
+// 				h := ref.Hash()
+// 				v := known[h]
+// 				v.ref = ref
+// 				v.datum = lit.Literal
+// 				known[h] = v
+// 			}
+// 			continue
+// 		}
+
+// 		if call.funcName == "is_null" {
+// 			ref := call.args[0].FieldRef()
+// 			if ref == nil {
+// 				out = append(out, m)
+// 			} else {
+// 				h := ref.Hash()
+// 				v := known[h]
+// 				v.ref = ref
+// 				v.datum = NewDatum(scalar.ScalarNull)
+// 				known[h] = v
+// 			}
+// 			continue
+// 		}
+
+// 		out = append(out, m)
+// 	}
+// 	return
+// }
+
+func SimplifyWithGuarantee(expr, guaranteedTruePred Expression) (Expression, error) {
+	return expr, nil
 }
