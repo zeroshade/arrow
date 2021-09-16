@@ -25,6 +25,7 @@ require (
 	github.com/google/go-cmp v0.5.6 // indirect
 	github.com/klauspost/compress v1.13.1
 	github.com/pierrec/lz4/v4 v4.1.8
+	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.7.0
 	golang.org/x/exp v0.0.0-20191002040644-a1355ae1e2c3
 	golang.org/x/net v0.0.0-20210614182718-04defd469f4e // indirect
