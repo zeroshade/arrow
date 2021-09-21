@@ -81,3 +81,10 @@ func (b *bufferWriteSeeker) Seek(offset int64, whence int) (int64, error) {
 	b.pos = newpos
 	return int64(newpos), nil
 }
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

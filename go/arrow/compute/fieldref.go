@@ -238,8 +238,9 @@ type FieldRef struct {
 	impl fieldRefImpl
 }
 
-func (f FieldRef) Hash() uint64 {
+func (f FieldRef) Hash(seed maphash.Seed) uint64 {
 	h := maphash.Hash{}
+	h.SetSeed(seed)
 	f.hash(&h)
 	return h.Sum64()
 }
