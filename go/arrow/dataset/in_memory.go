@@ -81,27 +81,26 @@ func (in *InMemoryFragment) Scan(opts *ScanOptions) (ScanTaskIterator, error) {
 	}, recordsFn), nil
 }
 
-func NewInMemoryDataset(schema *arrow.Schema, recs []array.Record) *Dataset {
-	return &Dataset{&inMemoryImpl{schema, recs}, compute.NewLiteral(true)}
+func NewInMemoryDataset(schema *arrow.Schema, recs []array.Record) *InMemoryDataset {
+	return &InMemoryDataset{dataset{schema, compute.NewLiteral(true)}, recs}
 }
 
-type inMemoryImpl struct {
-	schema  *arrow.Schema
+type InMemoryDataset struct {
+	dataset
 	batches []array.Record
 }
 
-func (i *inMemoryImpl) Schema() *arrow.Schema { return i.schema }
-func (i *inMemoryImpl) TypeName() string      { return "in-memory" }
+func (i *InMemoryDataset) TypeName() string { return "in-memory" }
 
-func (i *inMemoryImpl) ReplaceSchema(schema *arrow.Schema) (*Dataset, error) {
+func (i *InMemoryDataset) ReplaceSchema(schema *arrow.Schema) (Dataset, error) {
 	if err := checkProjectable(i.schema, schema); err != nil {
 		return nil, err
 	}
 
-	return &Dataset{&inMemoryImpl{schema, i.batches}, compute.NewLiteral(true)}, nil
+	return &InMemoryDataset{dataset{schema, compute.NewLiteral(true)}, i.batches}, nil
 }
 
-func (i *inMemoryImpl) getFragmentsImpl(compute.BoundExpression) FragmentIterator {
+func (i *InMemoryDataset) GetFragmentsCond(predicate compute.Expression) (FragmentIterator, error) {
 	itr := make(chan FragmentMessage)
 	go func() {
 		defer close(itr)
@@ -114,5 +113,9 @@ func (i *inMemoryImpl) getFragmentsImpl(compute.BoundExpression) FragmentIterato
 			itr <- FragmentMessage{NewInMemoryFragment([]array.Record{rec}), nil}
 		}
 	}()
-	return itr
+	return itr, nil
+}
+
+func (i *InMemoryDataset) GetFragments() (FragmentIterator, error) {
+	return i.GetFragmentsCond(compute.NewLiteral(true))
 }

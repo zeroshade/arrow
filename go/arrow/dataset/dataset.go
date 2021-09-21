@@ -55,7 +55,7 @@ type FragmentScanOptions interface {
 }
 
 type ScanOptions struct {
-	Filter, Projection  compute.BoundExpression
+	Filter, Projection  compute.Expression
 	DatasetSchema       *arrow.Schema
 	ProjectedSchema     *arrow.Schema
 	BatchSize           int64
@@ -129,40 +129,24 @@ func min(a, b int64) int64 {
 	return b
 }
 
-type datasetImpl interface {
-	getFragmentsImpl(predicate compute.BoundExpression) FragmentIterator
-
-	Schema() *arrow.Schema
-	TypeName() string
-	ReplaceSchema(schema *arrow.Schema) (*Dataset, error)
-}
-
-type Dataset struct {
-	datasetImpl
-
+type dataset struct {
+	schema    *arrow.Schema
 	partition compute.Expression
 }
 
-func (d *Dataset) PartitionExpr() compute.Expression { return d.partition }
-func (d *Dataset) GetFragments() (FragmentIterator, error) {
-	// .NewLiteral(true)
-	return d.GetFragmentsCond(compute.BoundExpression{})
+func (d *dataset) PartitionExpr() compute.Expression { return d.partition }
+func (d *dataset) Schema() *arrow.Schema             { return d.schema }
+
+type Dataset interface {
+	Schema() *arrow.Schema
+	PartitionExpr() compute.Expression
+	TypeName() string
+	ReplaceSchema(*arrow.Schema) (Dataset, error)
+	GetFragments() (FragmentIterator, error)
+	GetFragmentsCond(predicate compute.Expression) (FragmentIterator, error)
 }
 
-func (d *Dataset) GetFragmentsCond(predicate compute.BoundExpression) (FragmentIterator, error) {
-	// pred, err := compute.SimplifyWithGuarantee(predicate, d.partition)
-	// if err != nil {
-	// 	return nil, err
-	// }
-
-	// if pred.IsSatisfiable() {
-	return d.datasetImpl.getFragmentsImpl(predicate), nil
-	// }
-
-	// return emptyFragmentItr, nil
-}
-
-func GetFragmentsFromDatasets(ds []*Dataset, predicate compute.BoundExpression) FragmentIterator {
+func GetFragmentsFromDatasets(ds []Dataset, predicate compute.Expression) FragmentIterator {
 	fragItr := make(chan FragmentMessage)
 	go func() {
 		defer close(fragItr)
@@ -182,4 +166,18 @@ func GetFragmentsFromDatasets(ds []*Dataset, predicate compute.BoundExpression) 
 		}
 	}()
 	return fragItr
+}
+
+func SchemaFromColumnNames(input *arrow.Schema, names []string) *arrow.Schema {
+	cols := make([]arrow.Field, 0, len(names))
+	for _, n := range names {
+		ref := compute.NewFieldNameRef(n)
+		field, err := ref.GetOne(input)
+		if err == nil {
+			cols = append(cols, *field)
+		}
+	}
+
+	meta := input.Metadata()
+	return arrow.NewSchema(cols, &meta)
 }

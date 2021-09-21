@@ -22,29 +22,32 @@ import (
 	"github.com/pkg/errors"
 )
 
-type unionImpl struct {
-	children []*Dataset
-	schema   *arrow.Schema
+type UnionDataset struct {
+	dataset
+	children []Dataset
 }
 
-func NewUnionDataset(schema *arrow.Schema, children []*Dataset) (*Dataset, error) {
+func NewUnionDataset(schema *arrow.Schema, children []Dataset) (*UnionDataset, error) {
 	for _, c := range children {
 		if !c.Schema().Equal(schema) {
 			return nil, errors.Wrapf(TypeError, "child dataset had schema %s, but the union schema is %s", c.Schema(), schema)
 		}
 	}
-	return &Dataset{&unionImpl{children, schema}, compute.NewLiteral(true)}, nil
+	return &UnionDataset{dataset{schema, compute.NewLiteral(true)}, children}, nil
 }
 
-func (u *unionImpl) Schema() *arrow.Schema { return u.schema }
-func (u *unionImpl) TypeName() string      { return "union" }
+func (u *UnionDataset) TypeName() string { return "union" }
 
-func (u *unionImpl) getFragmentsImpl(predicate compute.BoundExpression) FragmentIterator {
-	return GetFragmentsFromDatasets(u.children, predicate)
+func (u *UnionDataset) GetFragmentsCond(predicate compute.Expression) (FragmentIterator, error) {
+	return GetFragmentsFromDatasets(u.children, predicate), nil
 }
 
-func (u *unionImpl) ReplaceSchema(schema *arrow.Schema) (*Dataset, error) {
-	newChildren := make([]*Dataset, len(u.children))
+func (u *UnionDataset) GetFragments() (FragmentIterator, error) {
+	return u.GetFragmentsCond(compute.NewLiteral(true))
+}
+
+func (u *UnionDataset) ReplaceSchema(schema *arrow.Schema) (Dataset, error) {
+	newChildren := make([]Dataset, len(u.children))
 	for i, c := range u.children {
 		child, err := c.ReplaceSchema(schema)
 		if err != nil {

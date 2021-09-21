@@ -25,6 +25,8 @@ import "C"
 
 import (
 	"context"
+	"errors"
+	"runtime"
 	"unsafe"
 
 	"github.com/apache/arrow/go/arrow"
@@ -64,8 +66,6 @@ func ExecuteScalarExpr(ctx context.Context, mem memory.Allocator, rb array.Recor
 	defer cdata.CArrowSchemaRelease(convCSchema(input.schema))
 
 	output := C.get_io()
-	defer cdata.CArrowArrayRelease(convCArr(output.data))
-	defer cdata.CArrowSchemaRelease(convCSchema(output.schema))
 	defer C.release_io(&output)
 
 	buf := SerializeExpr(expr, mem)
@@ -73,6 +73,8 @@ func ExecuteScalarExpr(ctx context.Context, mem memory.Allocator, rb array.Recor
 	if ec := C.arrow_compute_execute_scalar_expr(ec, &input, (*C.uint8_t)(unsafe.Pointer(&buf.Bytes()[0])), C.int(buf.Len()), &output); ec != 0 {
 		return nil, xerrors.Errorf("got errorcode: %d", ec)
 	}
+	defer cdata.CArrowArrayRelease(convCArr(output.data))
+	defer cdata.CArrowSchemaRelease(convCSchema(output.schema))
 
 	f, arr, err := cdata.ImportCArray((*cdata.CArrowArray)(unsafe.Pointer(output.data)), (*cdata.CArrowSchema)(unsafe.Pointer(output.schema)))
 	if err != nil {
@@ -93,33 +95,168 @@ func ExecuteScalarExpr(ctx context.Context, mem memory.Allocator, rb array.Recor
 	return NewDatum(arr), nil
 }
 
-type BoundExpression struct {
-	b  C.BoundExpression
-	dt arrow.DataType
+func isFuncScalar(funcName string) bool {
+	cfuncName := C.CString(funcName)
+	defer C.free(unsafe.Pointer(cfuncName))
+
+	return C.arrow_compute_function_scalar(cfuncName) == C._Bool(true)
 }
 
-func (b BoundExpression) IsBound() bool {
-	return b.b != 0
+type boundRef C.BoundExpression
+
+func (b boundRef) isScalar() bool {
+	return C.arrow_compute_bound_is_scalar(C.BoundExpression(b)) == C._Bool(true)
 }
 
-func (b BoundExpression) Release() {
-	C.arrow_compute_bound_expr_release(b.b)
+func (b boundRef) isSatisfiable() bool {
+	return C.arrow_compute_bound_is_satisfiable(C.BoundExpression(b)) == C._Bool(true)
 }
 
-func (b BoundExpression) Type() (arrow.DataType, error) {
-	if b.dt == nil {
-		var cschema C.struct_ArrowSchema
-		C.arrow_compute_bound_expr_type(b.b, &cschema)
-		field, err := cdata.ImportCArrowField(convCSchema(&cschema))
-		if err != nil {
-			return nil, err
-		}
-		b.dt = field.Type
+func (b boundRef) release() {
+	C.arrow_compute_bound_expr_release(C.BoundExpression(b))
+}
+
+// type BoundExpression struct {
+// 	b  C.BoundExpression
+// 	dt arrow.DataType
+
+// 	origExpr Expression
+// 	hash     uint64
+// }
+
+// func (b BoundExpression) IsBound() bool {
+// 	return b.b != 0
+// }
+
+// func (b BoundExpression) IsScalarExpr() bool {
+// 	if _, ok := b.origExpr.(*Call); ok {
+// 		return C.arrow_compute_bound_is_scalar(b.b) == C._Bool(true)
+// 	}
+// 	return b.origExpr.IsScalarExpr()
+// }
+
+// func (b BoundExpression) IsNullLiteral() bool {
+// 	return b.origExpr.IsNullLiteral()
+// }
+
+// func (b *BoundExpression) IsSatisfiable() bool {
+// 	if lit, ok := b.origExpr.(*Literal); ok {
+// 		return lit.IsSatisfiable()
+// 	}
+
+// 	dt := b.Type()
+// 	return dt == nil || dt.ID() != arrow.NULL
+// }
+
+// func (b *BoundExpression) FieldRef() *FieldRef {
+// 	return b.origExpr.FieldRef()
+// }
+
+// func (b *BoundExpression) Descr() ValueDescr {
+// 	switch e := b.origExpr.(type) {
+// 	case *Literal:
+// 		return e.Descr()
+// 	case *Parameter:
+// 		return ValueDescr{Shape: ShapeArray, Type: b.Type()}
+// 	case *Call:
+// 		if b.IsScalarExpr() {
+// 			return ValueDescr{Shape: ShapeScalar, Type: b.Type()}
+// 		}
+// 		return ValueDescr{Shape: ShapeArray, Type: b.Type()}
+// 	}
+// 	return ValueDescr{}
+// }
+
+// func (b BoundExpression) Equals(rhs Expression) bool {
+// 	return b.origExpr.Equals(rhs)
+// }
+
+// func (b BoundExpression) Hash() uint64 {
+// 	return b.hash
+// }
+
+// func (b BoundExpression) Release() {
+// 	C.arrow_compute_bound_expr_release(b.b)
+// }
+
+// func (b *BoundExpression) Type() arrow.DataType {
+// 	dt, err := b.DataType()
+// 	if err != nil {
+// 		panic(err)
+// 	}
+// 	return dt
+// }
+
+// func (b *BoundExpression) DataType() (arrow.DataType, error) {
+// 	if b.dt == nil {
+// 		var cschema C.struct_ArrowSchema
+// 		C.arrow_compute_bound_expr_type(b.b, &cschema)
+// 		field, err := cdata.ImportCArrowField(convCSchema(&cschema))
+// 		if err != nil {
+// 			return nil, err
+// 		}
+// 		b.dt = field.Type
+// 	}
+// 	return b.dt, nil
+// }
+
+func getBoundType(b boundRef) (arrow.DataType, error) {
+	var cschema C.struct_ArrowSchema
+	C.arrow_compute_bound_expr_type(C.BoundExpression(b), &cschema)
+	field, err := cdata.ImportCArrowField(convCSchema(&cschema))
+	if err != nil {
+		return nil, err
 	}
-	return b.dt, nil
+	return field.Type, nil
 }
 
-func BindExpression(ctx context.Context, mem memory.Allocator, expr Expression, schema *arrow.Schema) BoundExpression {
+func copyForBind(expr Expression, boundExpr boundRef) (out Expression) {
+	switch e := expr.(type) {
+	case *Literal:
+		out = &Literal{e.Literal, boundExpr}
+	case *Parameter:
+		dt, err := getBoundType(boundExpr)
+		if err != nil {
+			panic(err)
+		}
+		out = &Parameter{ref: e.ref, index: e.index, descr: ValueDescr{ShapeArray, dt}}
+	case *Call:
+		dt, err := getBoundType(boundExpr)
+		if err != nil {
+			panic(err)
+		}
+		var call Call = *e
+		call.descr = ValueDescr{Type: dt}
+		if boundExpr.isScalar() {
+			call.descr.Shape = ShapeScalar
+		} else {
+			call.descr.Shape = ShapeArray
+		}
+		call.b = boundExpr
+		out = &call
+	}
+
+	runtime.SetFinalizer(out, func(o Expression) {
+		var b boundRef
+		switch o := o.(type) {
+		case *Literal:
+			b = o.b
+		case *Parameter:
+			b = o.b
+		case *Call:
+			b = o.b
+		}
+		b.release()
+	})
+	return
+}
+
+func getBoundArg(b boundRef, i int, expr Expression) Expression {
+	bound := C.arrow_compute_get_bound_arg(C.BoundExpression(b), C.size_t(i))
+	return copyForBind(expr, boundRef(bound))
+}
+
+func BindExpression(ctx context.Context, mem memory.Allocator, expr Expression, schema *arrow.Schema) Expression {
 	ec := ctx.Value(execCtxKey{}).(C.ExecContext)
 	buf := SerializeExpr(expr, mem)
 	defer buf.Release()
@@ -128,6 +265,35 @@ func BindExpression(ctx context.Context, mem memory.Allocator, expr Expression, 
 	cdata.ExportArrowSchema(schema, convCSchema(&cschema))
 	defer cdata.CArrowSchemaRelease(convCSchema(&cschema))
 
-	boundExpr := C.arrow_compute_bind_expr(ec, &cschema, (*C.uint8_t)(unsafe.Pointer(&buf.Bytes()[0])), C.int(buf.Len()))
-	return BoundExpression{boundExpr, nil}
+	boundExpr := boundRef(C.arrow_compute_bind_expr(ec, &cschema, (*C.uint8_t)(unsafe.Pointer(&buf.Bytes()[0])), C.int(buf.Len())))
+
+	return copyForBind(expr, boundExpr)
+}
+
+func SimplifyWithGuarantee(expr, guaranteedTruePred Expression) (Expression, error) {
+	if !expr.IsBound() {
+		return nil, errors.New("must provide bound expr")
+	}
+
+	var bound boundRef
+	switch e := expr.(type) {
+	case *Literal:
+		bound = e.b
+	case *Call:
+		bound = e.b
+	case *Parameter:
+		bound = e.b
+	case *unknownBoundExpr:
+		bound = e.b
+	}
+
+	var out C.BoundExpression
+	buf := SerializeExpr(guaranteedTruePred, memory.DefaultAllocator)
+	defer buf.Release()
+
+	if C.arrow_compute_bound_expr_simplify_guarantee(C.BoundExpression(bound), (*C.uint8_t)(unsafe.Pointer(&buf.Bytes()[0])), C.int(buf.Len()), &out) != 0 {
+		return nil, errors.New("bad expr simplify")
+	}
+
+	return &unknownBoundExpr{b: boundRef(out)}, nil
 }

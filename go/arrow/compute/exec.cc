@@ -28,6 +28,8 @@
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
 #include "arrow/compute/exec.h"
+#include "arrow/compute/registry.h"
+#include "arrow/compute/function.h"
 
 ExecContext arrow_compute_default_context() {
     std::shared_ptr<arrow::compute::ExecContext> ctx(arrow::compute::default_exec_context(), [](arrow::compute::ExecContext*){});
@@ -81,6 +83,45 @@ void arrow_compute_bound_expr_release(BoundExpression bound) {
     release_ref<arrow::compute::Expression>(bound);
 }
 
+uint64_t arrow_compute_bound_expr_hash(BoundExpression bound) {
+    auto expr = retrieve_instance<arrow::compute::Expression>(bound);
+    return expr->hash();
+}
+
+const char* arrow_compute_bound_expr_funcname(BoundExpression bound) {
+    auto expr = retrieve_instance<arrow::compute::Expression>(bound);
+    auto* call = expr->call();
+    if (!call) {
+        return nullptr;
+    }
+    return call->function_name.c_str();
+}
+
+bool arrow_compute_bound_is_scalar(BoundExpression bound) {
+    auto expr = retrieve_instance<arrow::compute::Expression>(bound);
+    return expr->IsScalarExpression();
+}
+
+bool arrow_compute_function_scalar(const char* funcname) {
+    if (auto function = arrow::compute::GetFunctionRegistry()->GetFunction(funcname).ValueOr(nullptr)) {
+        return function->kind() == arrow::compute::Function::SCALAR;        
+    }
+    return false;
+}
+
+bool arrow_compute_bound_is_satisfiable(BoundExpression bound) {
+    auto expr = retrieve_instance<arrow::compute::Expression>(bound);
+    return expr->IsSatisfiable();
+}
+
+BoundExpression arrow_compute_get_bound_arg(BoundExpression bound, size_t idx) {
+    auto expr = retrieve_instance<arrow::compute::Expression>(bound);
+    if (auto* call = expr->call()) {
+        return create_ref<arrow::compute::Expression>(std::make_shared<arrow::compute::Expression>(call->arguments[idx]));
+    }
+    return 0;
+}
+
 int arrow_compute_bound_expr_simplify_guarantee(BoundExpression expr, 
     const uint8_t* serialized_guarantee, const int serialized_len,
     BoundExpression* out) {
@@ -88,11 +129,17 @@ int arrow_compute_bound_expr_simplify_guarantee(BoundExpression expr,
     auto guarantee_result = arrow::compute::Deserialize(std::make_shared<arrow::Buffer>(serialized_guarantee, serialized_len));
     if (!guarantee_result.ok()) {
         std::cerr << "msg: " << guarantee_result.status().message() << std::endl;
-        return 1;
+        return 0;
     }
 
     auto bound = retrieve_instance<arrow::compute::Expression>(expr);
-    arrow::compute::SimplifyWithGuarantee(*bound, guarantee_result.MoveValueUnsafe());
+    auto simplified = arrow::compute::SimplifyWithGuarantee(*bound, guarantee_result.MoveValueUnsafe());
+    if (!simplified.ok()) {
+        std::cerr << "msg: " << guarantee_result.status().message() << std::endl;
+        return 0;
+    }
+
+    *out = create_ref<arrow::compute::Expression>(std::make_shared<arrow::compute::Expression>(simplified.MoveValueUnsafe()));
     return 0;
 }
 

@@ -18,7 +18,6 @@ package dataset
 
 import (
 	"io"
-	"sync"
 
 	"github.com/apache/arrow/go/arrow/array"
 	"github.com/apache/arrow/go/arrow/compute"
@@ -71,10 +70,10 @@ func getScanTaskGenerator(frag FragmentIterator, opts *ScanOptions) ScanTaskGene
 
 type Scanner struct {
 	options *ScanOptions
-	dataset *Dataset
+	dataset Dataset
 }
 
-func NewScanner(opts *ScanOptions, dataset *Dataset) (*Scanner, error) {
+func NewScanner(opts *ScanOptions, dataset Dataset) (*Scanner, error) {
 	opts.DatasetSchema = dataset.Schema()
 	if !opts.Filter.IsBound() {
 		if err := SetFilter(opts, compute.NewLiteral(true)); err != nil {
@@ -91,7 +90,7 @@ func NewScanner(opts *ScanOptions, dataset *Dataset) (*Scanner, error) {
 }
 
 func (s *Scanner) getFragments() FragmentIterator {
-	return GetFragmentsFromDatasets([]*Dataset{s.dataset}, s.options.Filter)
+	return GetFragmentsFromDatasets([]Dataset{s.dataset}, s.options.Filter)
 }
 
 func (s *Scanner) Scan() ScanTaskGenerator {
@@ -105,8 +104,8 @@ func (s *Scanner) ScanBatches() <-chan TaggedRecord {
 	out := make(chan TaggedRecord, s.options.BatchReadahead)
 	go func() {
 		defer close(out)
-		var wg sync.WaitGroup
-		defer wg.Wait()
+		// var wg sync.WaitGroup
+		// defer wg.Wait()
 
 		for st := range gen {
 			if st.Err != nil {
@@ -114,18 +113,18 @@ func (s *Scanner) ScanBatches() <-chan TaggedRecord {
 				break
 			}
 
-			wg.Add(1)
-			go func(task ScanTask) {
-				defer wg.Done()
+			// wg.Add(1)
+			// go func(task ScanTask) {
+			// defer wg.Done()
 
-				for m := range task.Execute() {
-					if m.Err != nil {
-						out <- TaggedRecord{nil, task.Fragment(), m.Err}
-						break
-					}
-					out <- TaggedRecord{m.Record, task.Fragment(), nil}
+			for m := range st.Task.Execute() {
+				if m.Err != nil {
+					out <- TaggedRecord{nil, st.Task.Fragment(), m.Err}
+					break
 				}
-			}(st.Task)
+				out <- TaggedRecord{m.Record, st.Task.Fragment(), nil}
+			}
+			// }(st.Task)
 		}
 	}()
 	return out

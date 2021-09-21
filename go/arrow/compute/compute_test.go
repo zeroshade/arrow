@@ -244,10 +244,7 @@ func TestBindExpression(t *testing.T) {
 	ctx := ExecContext(context.Background())
 	defer ReleaseContext(ctx)
 	bound := BindExpression(ctx, memory.DefaultAllocator, expr, schema)
-	defer bound.Release()
-
-	dt, err := bound.Type()
-	assert.NoError(t, err)
+	dt := bound.Type()
 	i32 := schema.Field(0)
 	i32.Nullable = true
 	exp := arrow.StructOf(i32, schema.Field(2))

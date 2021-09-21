@@ -55,10 +55,7 @@ func checkProjectable(from, to *arrow.Schema) error {
 
 func SetProjection(opts *ScanOptions, projection compute.Expression) error {
 	opts.Projection = compute.BindExpression(opts.Ctx, opts.Mem, projection, opts.DatasetSchema)
-	typ, err := opts.Projection.Type()
-	if err != nil {
-		return err
-	}
+	typ := opts.Projection.Type()
 
 	if typ.ID() != arrow.STRUCT {
 		return xerrors.Errorf("Projection %s cannot yield record batches", typ)

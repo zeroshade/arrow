@@ -17,6 +17,7 @@
 package compute
 
 import (
+	"hash/maphash"
 	"reflect"
 	"strconv"
 
@@ -27,6 +28,8 @@ import (
 	"github.com/apache/arrow/go/arrow/scalar"
 )
 
+var hashSeed = maphash.MakeSeed()
+
 type Expression interface {
 	IsBound() bool
 	IsScalarExpr() bool
@@ -36,14 +39,56 @@ type Expression interface {
 	Descr() ValueDescr
 	Type() arrow.DataType
 	Equals(Expression) bool
+	Hash() uint64
+}
+
+type unknownBoundExpr struct {
+	b boundRef
+
+	typ arrow.DataType
+}
+
+func (u unknownBoundExpr) IsBound() bool { return true }
+func (u unknownBoundExpr) IsSatisfiable() bool {
+	return u.b.isSatisfiable()
+}
+func (u unknownBoundExpr) IsScalarExpr() bool {
+	return u.b.isScalar()
+}
+func (u unknownBoundExpr) IsNullLiteral() bool {
+	panic("not implemented")
+}
+func (u unknownBoundExpr) FieldRef() *FieldRef {
+	panic("not implemented")
+}
+func (u unknownBoundExpr) Descr() ValueDescr {
+	panic("not implemented")
+}
+func (u unknownBoundExpr) Type() arrow.DataType {
+	panic("not implemented")
+}
+func (u unknownBoundExpr) Equals(Expression) bool {
+	panic("not implemented")
+}
+func (u unknownBoundExpr) Hash() uint64 {
+	panic("not implemented")
 }
 
 type Literal struct {
 	Literal Datum
+
+	b boundRef
 }
 
 func (l *Literal) IsBound() bool      { return l.Type() != nil }
 func (l *Literal) IsScalarExpr() bool { return l.Literal.Kind() == KindScalar }
+
+func (l *Literal) Hash() uint64 {
+	if l.Literal.Kind() == KindScalar {
+		return scalar.HashScalar(hashSeed, l.Literal.(*ScalarDatum).Value)
+	}
+	return 0
+}
 
 func (l *Literal) Equals(other Expression) bool {
 	rhs, ok := other.(*Literal)
@@ -99,6 +144,8 @@ type Parameter struct {
 	ref   *FieldRef
 	descr ValueDescr
 	index int
+
+	b boundRef
 }
 
 func (p *Parameter) IsBound() bool        { return p.Type() != nil }
@@ -108,6 +155,7 @@ func (p *Parameter) IsSatisfiable() bool  { return p.Type() == nil || p.Type().I
 func (p *Parameter) FieldRef() *FieldRef  { return p.ref }
 func (p *Parameter) Descr() ValueDescr    { return p.descr }
 func (p *Parameter) Type() arrow.DataType { return p.descr.Type }
+func (p *Parameter) Hash() uint64         { return p.ref.Hash(hashSeed) }
 func (p *Parameter) Equals(other Expression) bool {
 	rhs, ok := other.(*Parameter)
 	if !ok {
@@ -144,6 +192,8 @@ type Call struct {
 	args     []Expression
 	descr    ValueDescr
 	options  *FunctionOptions
+
+	b boundRef
 }
 
 func (c *Call) IsNullLiteral() bool  { return false }
@@ -151,30 +201,59 @@ func (c *Call) FieldRef() *FieldRef  { return nil }
 func (c *Call) Descr() ValueDescr    { return c.descr }
 func (c *Call) Type() arrow.DataType { return c.descr.Type }
 func (c *Call) IsSatisfiable() bool  { return c.Type() == nil || c.Type().ID() != arrow.NULL }
+func (c *Call) Hash() uint64 {
+	var h maphash.Hash
+	h.SetSeed(hashSeed)
+
+	h.WriteString(c.funcName)
+	hash := h.Sum64()
+	for _, arg := range c.args {
+		hash = hashCombine(hash, arg.Hash())
+	}
+	return hash
+}
 
 func (c *Call) IsBound() bool {
-	if c.Type() == nil {
-		return false
+	return c.b != 0
+
+	// if c.Type() == nil {
+	// 	return false
+	// }
+
+	// for _, arg := range c.args {
+	// 	if !arg.IsBound() {
+	// 		return false
+	// 	}
+	// }
+	// return true
+}
+
+func (c *Call) GetArg(i int) Expression {
+	// if we're not bound, then just return the arg
+	if !c.IsBound() {
+		return c.args[i]
 	}
 
-	for _, arg := range c.args {
-		if !arg.IsBound() {
-			return false
-		}
+	// if we're bound, then check if we updated our arg with the bound version yet
+	// we do this lazily after binding.
+	if !c.args[i].IsBound() {
+		c.args[i] = getBoundArg(c.b, i, c.args[i])
 	}
-	return true
+
+	return c.args[i]
 }
 
 func (c *Call) IsScalarExpr() bool {
+	if c.b != 0 {
+		return c.b.isScalar()
+	}
 	for _, arg := range c.args {
 		if !arg.IsScalarExpr() {
 			return false
 		}
 	}
 
-	// check function if it is scalar or not
-
-	return false
+	return isFuncScalar(c.funcName)
 }
 
 func (c *Call) Equals(other Expression) bool {
@@ -201,7 +280,7 @@ func (c *Call) Equals(other Expression) bool {
 }
 
 func NewLiteral(arg interface{}) Expression {
-	return &Literal{NewDatum(arg)}
+	return &Literal{NewDatum(arg), 0}
 }
 
 func NewRef(ref FieldRef) Expression {
@@ -272,6 +351,18 @@ type StrptimeOptions struct {
 
 func (StrptimeOptions) TypeName() string { return "StrptimeOptions" }
 
+type CastOptions struct {
+	ToType               arrow.DataType `compute:"to_type"`
+	AllowIntOverflow     bool           `compute:"allow_int_overflow"`
+	AllowTimeTruncate    bool           `compute:"allow_time_truncate"`
+	AllowTimeOverflow    bool           `compute:"allow_time_overflow"`
+	AllowDecimalTruncate bool           `compute:"allow_decimal_truncate"`
+	AllowFloatTruncate   bool           `compute:"allow_float_truncate"`
+	AllowInvalidUtf8     bool           `compute:"allow_invalid_utf8"`
+}
+
+func (CastOptions) TypeName() string { return "CastOptions" }
+
 func Project(values []Expression, names []string) Expression {
 	nulls := make([]bool, len(names))
 	for i := range nulls {
@@ -331,12 +422,12 @@ func foldLeft(op binop, args ...Expression) Expression {
 	return folded
 }
 
-func And(lhs, rhs Expression) Expression {
+func and(lhs, rhs Expression) Expression {
 	return NewCall("and_kleene", []Expression{lhs, rhs}, nil)
 }
 
-func AndList(ops ...Expression) Expression {
-	folded := foldLeft(And, ops...)
+func And(ops ...Expression) Expression {
+	folded := foldLeft(and, ops...)
 	if folded != nil {
 		return folded
 	}
@@ -534,7 +625,3 @@ func SerializeExpr(expr Expression, mem memory.Allocator) *memory.Buffer {
 // 	}
 // 	return
 // }
-
-func SimplifyWithGuarantee(expr, guaranteedTruePred Expression) (Expression, error) {
-	return expr, nil
-}

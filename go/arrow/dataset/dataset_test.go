@@ -18,7 +18,9 @@ package dataset_test
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"io/ioutil"
 	"reflect"
 	"testing"
 
@@ -26,6 +28,7 @@ import (
 	"github.com/apache/arrow/go/arrow/array"
 	"github.com/apache/arrow/go/arrow/compute"
 	"github.com/apache/arrow/go/arrow/dataset"
+	"github.com/apache/arrow/go/arrow/internal/testing/tools"
 	"github.com/apache/arrow/go/arrow/memory"
 	"github.com/stretchr/testify/suite"
 )
@@ -81,6 +84,7 @@ func TestDatasets(t *testing.T) {
 	suite.Run(t, new(InMemoryFragmentSuite))
 	suite.Run(t, new(InMemoryDatasetSuite))
 	suite.Run(t, new(UnionDatasetSuite))
+	suite.Run(t, new(EndToEndSuite))
 }
 
 type InMemoryFragmentSuite struct {
@@ -163,7 +167,7 @@ func (d *DatasetTestSuite) assertScannerEquals(rdr array.RecordReader, scanner *
 	}
 }
 
-func (d *DatasetTestSuite) assertDatasetEquals(rdr array.RecordReader, ds *dataset.Dataset, ensureDrained bool) {
+func (d *DatasetTestSuite) assertDatasetEquals(rdr array.RecordReader, ds dataset.Dataset, ensureDrained bool) {
 	scanner, err := dataset.NewScanner(&d.opts, ds)
 	d.NoError(err)
 
@@ -282,7 +286,7 @@ func (u *UnionDatasetSuite) TestReplaceSchema() {
 	batch := ConstantRecordBatchGenZeros(batchSize, u.sc)
 	defer batch.Release()
 
-	children := []*dataset.Dataset{
+	children := []dataset.Dataset{
 		dataset.NewInMemoryDataset(u.sc, createBatchList(batch, nbatches)),
 		dataset.NewInMemoryDataset(u.sc, createBatchList(batch, nbatches)),
 	}
@@ -316,8 +320,8 @@ func (u *UnionDatasetSuite) TestReplaceSchema() {
 	u.ErrorIs(err, dataset.TypeError)
 }
 
-func createDatasetList(ds *dataset.Dataset, times int) []*dataset.Dataset {
-	children := make([]*dataset.Dataset, times)
+func createDatasetList(ds dataset.Dataset, times int) []dataset.Dataset {
+	children := make([]dataset.Dataset, times)
 	for i := range children {
 		children[i] = ds
 	}
@@ -372,7 +376,7 @@ func (u *UnionDatasetSuite) TestTrivialScan() {
 	batch := ConstantRecordBatchGenZeros(batchSize, u.sc)
 	defer batch.Release()
 
-	children := []*dataset.Dataset{
+	children := []dataset.Dataset{
 		dataset.NewInMemoryDataset(u.sc, createBatchList(batch, nbatches)),
 		dataset.NewInMemoryDataset(u.sc, createBatchList(batch, nbatches)),
 	}
@@ -384,4 +388,174 @@ func (u *UnionDatasetSuite) TestTrivialScan() {
 	ds, err := dataset.NewUnionDataset(u.sc, children)
 	u.NoError(err)
 	u.assertDatasetEquals(rdr, ds, true)
+}
+
+type EndToEndSuite struct {
+	DatasetTestSuite
+
+	mockfs *tools.MockFS
+
+	expected []string
+}
+
+func expectedOutput(schema *arrow.Schema, data []string) []array.Record {
+	out := make([]array.Record, len(data))
+	for i, d := range data {
+		var err error
+		out[i], err = tools.RecordFromJSON(schema, []byte(d))
+		if err != nil {
+			panic(err)
+		}
+	}
+	return out
+}
+
+func (ete *EndToEndSuite) SetupTest() {
+	ete.DatasetTestSuite.SetupTest()
+	ete.setSchema(arrow.NewSchema([]arrow.Field{
+		{Name: "region", Type: arrow.BinaryTypes.String},
+		{Name: "model", Type: arrow.BinaryTypes.String},
+		{Name: "sales", Type: arrow.PrimitiveTypes.Float64},
+		// partition cols
+		{Name: "year", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+		{Name: "month", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+		{Name: "country", Type: arrow.BinaryTypes.String, Nullable: true},
+	}, nil))
+
+	files := []struct {
+		name    string
+		content string
+	}{
+		{"/dataset/2018/01/US/dat.json", `[
+			{"region": "NY", "model": "3", "sales": 742.0},
+			{"region": "NY", "model": "S", "sales": 304.125},
+			{"region": "NY", "model": "X", "sales": 136.25},
+			{"region": "NY", "model": "Y", "sales": 27.5}
+		]`},
+		{"/dataset/2018/01/CA/dat.json", `[
+			{"region": "CA", "model": "3", "sales": 512},
+			{"region": "CA", "model": "S", "sales": 978},
+			{"region": "CA", "model": "X", "sales": 1.0},
+			{"region": "CA", "model": "Y", "sales": 69}
+		]`},
+		{"/dataset/2019/01/US/dat.json", `[
+			{"region": "QC", "model": "3", "sales": 273.5},
+			{"region": "QC", "model": "S", "sales": 13},
+			{"region": "QC", "model": "X", "sales": 54},
+			{"region": "QC", "model": "Y", "sales": 21}
+		]`},
+		{"/dataset/2019/01/CA/dat.json", `[
+			{"region": "QC", "model": "3", "sales": 152.25},
+			{"region": "QC", "model": "S", "sales": 10},
+			{"region": "QC", "model": "X", "sales": 42},
+			{"region": "QC", "model": "Y", "sales": 37}
+		]`},
+		{"/dataset/.pesky", "garbage content"},
+	}
+
+	ete.expected = make([]string, 0, len(files))
+
+	mockfs := &tools.MockFS{}
+	for _, f := range files {
+		ete.NoError(mockfs.CreateFile(f.name, []byte(f.content)))
+		ete.expected = append(ete.expected, f.content)
+	}
+	ete.mockfs = mockfs
+}
+
+type JSONRecordBatchFileFormat struct {
+	resolver func(*dataset.FileSource) *arrow.Schema
+}
+
+func (j *JSONRecordBatchFileFormat) Equals(f dataset.FileFormat) bool {
+	return f == dataset.FileFormat(j)
+}
+func (j *JSONRecordBatchFileFormat) TypeName() string { return "json_record_batch" }
+func (j *JSONRecordBatchFileFormat) IsSupported(f *dataset.FileSource) (bool, error) {
+	return true, nil
+}
+func (j *JSONRecordBatchFileFormat) Inspect(f *dataset.FileSource) (*arrow.Schema, error) {
+	return j.resolver(f), nil
+}
+func (j *JSONRecordBatchFileFormat) ScanFile(opts *dataset.ScanOptions, fragment *dataset.FileFragment) (dataset.ScanTaskIterator, error) {
+	file, err := fragment.Source().Open()
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := ioutil.ReadAll(file)
+	if err != nil {
+		return nil, err
+	}
+
+	schema, err := j.Inspect(fragment.Source())
+	if err != nil {
+		return nil, err
+	}
+
+	rec, err := tools.RecordFromJSON(schema, data)
+	if err != nil {
+		return nil, err
+	}
+
+	return dataset.NewInMemoryFragment([]array.Record{rec}).Scan(opts)
+}
+
+// func (j *JSONRecordBatchFileFormat) ScanBatches(opts *dataset.ScanOptions, file *dataset.FileFragment) (dataset.RecordGenerator, error) {
+
+// }
+func (j *JSONRecordBatchFileFormat) MakeFragment(f *dataset.FileSource, opts ...dataset.MakeFragmentOption) (*dataset.FileFragment, error) {
+	return dataset.NewFileFragmentWithOptions(f, j, opts...), nil
+}
+
+func (ete *EndToEndSuite) TestEndToEndSingle() {
+	formatSchema := dataset.SchemaFromColumnNames(ete.sc, []string{"region", "model", "sales"})
+	format := &JSONRecordBatchFileFormat{func(*dataset.FileSource) *arrow.Schema { return formatSchema }}
+
+	fsd, err := dataset.NewFileSystemDatasetFromPaths([]string{
+		"/dataset/2018/01/US/dat.json",
+		"/dataset/2018/01/CA/dat.json",
+		"/dataset/2019/01/US/dat.json",
+		"/dataset/2019/01/CA/dat.json",
+	},
+		ete.mockfs, format,
+		&dataset.FileSystemDatasetOptions{})
+
+	ete.NoError(err)
+
+	scanner, err := dataset.NewScanner(&ete.opts, fsd)
+	ete.NoError(err)
+
+	expected := expectedOutput(formatSchema, ete.expected[:len(ete.expected)-1])
+
+	for rec := range scanner.ScanBatches() {
+		ete.True(array.RecordEqual(expected[0], rec.RecordBatch))
+		expected = expected[1:]
+	}
+}
+
+func (ete *EndToEndSuite) TestDirectoryPartitioning() {
+	formatSchema := dataset.SchemaFromColumnNames(ete.sc, []string{"region", "model", "sales"})
+	format := &JSONRecordBatchFileFormat{func(*dataset.FileSource) *arrow.Schema { return formatSchema }}
+
+	fsd, err := dataset.NewFileSystemDatasetFromPaths([]string{
+		"/dataset/2018/01/US/dat.json",
+		"/dataset/2018/01/CA/dat.json",
+		"/dataset/2019/01/US/dat.json",
+		"/dataset/2019/01/CA/dat.json",
+	},
+		ete.mockfs, format,
+		&dataset.FileSystemDatasetOptions{
+			InspectOpts:         dataset.InspectOptions{Fragments: 1},
+			PartitionBaseDir:    "/dataset/",
+			PartitioningFactory: dataset.NewDirectoryPartitioningFactory([]string{"year", "month", "country"})})
+	ete.NoError(err)
+
+	ete.setFilter(compute.And(compute.Equal(compute.NewFieldRef("year"), compute.NewLiteral(2019)), compute.Greater(compute.NewFieldRef("sales"), compute.NewLiteral(100.0))))
+	scanner, err := dataset.NewScanner(&ete.opts, fsd)
+	ete.NoError(err)
+
+	for rec := range scanner.ScanBatches() {
+		fmt.Println(rec)
+	}
 }

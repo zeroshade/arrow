@@ -19,6 +19,7 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include "arrow/c/abi.h"
 
 #ifdef __cplusplus
@@ -58,9 +59,14 @@ BoundExpression arrow_compute_bind_expr(ExecContext ctx, struct ArrowSchema* sch
 
 void arrow_compute_bound_expr_type(BoundExpression bound, struct ArrowSchema* out);
 void arrow_compute_bound_expr_release(BoundExpression bound);
+uint64_t arrow_compute_bound_expr_hash(BoundExpression bound);
 int arrow_compute_bound_expr_simplify_guarantee(BoundExpression expr, 
     const uint8_t* serialized_guarantee, const int serialized_len,
     BoundExpression* out);
+bool arrow_compute_bound_is_satisfiable(BoundExpression bound);
+bool arrow_compute_bound_is_scalar(BoundExpression bound);
+bool arrow_compute_function_scalar(const char* funcname);
+BoundExpression arrow_compute_get_bound_arg(BoundExpression bound, size_t idx);
 
 int arrow_compute_execute_scalar_expr(ExecContext ctx, 
     struct ArrowComputeInputOutput* partial_input,
