@@ -27,6 +27,12 @@ uintptr_t create_ref(std::shared_ptr<T> t) {
 }
 
 template <typename T>
+uintptr_t create_ref(std::shared_ptr<const T> t) {
+    std::shared_ptr<const T>* retained_ptr = new std::shared_ptr<const T>(t);
+    return reinterpret_cast<uintptr_t>(retained_ptr);
+}
+
+template <typename T>
 std::shared_ptr<T> retrieve_instance(uintptr_t ref) {
     std::shared_ptr<T>* retrieved_ptr = reinterpret_cast<std::shared_ptr<T>*>(ref);
     return *retrieved_ptr;
