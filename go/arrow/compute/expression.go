@@ -40,6 +40,7 @@ type Expression interface {
 	Type() arrow.DataType
 	Equals(Expression) bool
 	Hash() uint64
+	bound() boundRef
 }
 
 type unknownBoundExpr struct {
@@ -48,7 +49,8 @@ type unknownBoundExpr struct {
 	typ arrow.DataType
 }
 
-func (u unknownBoundExpr) IsBound() bool { return true }
+func (u unknownBoundExpr) bound() boundRef { return u.b }
+func (u unknownBoundExpr) IsBound() bool   { return true }
 func (u unknownBoundExpr) IsSatisfiable() bool {
 	return u.b.isSatisfiable()
 }
@@ -80,6 +82,7 @@ type Literal struct {
 	b boundRef
 }
 
+func (l *Literal) bound() boundRef    { return l.b }
 func (l *Literal) IsBound() bool      { return l.Type() != nil }
 func (l *Literal) IsScalarExpr() bool { return l.Literal.Kind() == KindScalar }
 
@@ -148,6 +151,7 @@ type Parameter struct {
 	b boundRef
 }
 
+func (p *Parameter) bound() boundRef      { return p.b }
 func (p *Parameter) IsBound() bool        { return p.Type() != nil }
 func (p *Parameter) IsScalarExpr() bool   { return p.ref != nil }
 func (p *Parameter) IsNullLiteral() bool  { return false }
@@ -187,6 +191,19 @@ func (f FunctionOptions) ToStructScalar(mem memory.Allocator) (*scalar.Struct, e
 
 func (f FunctionOptions) Equals(rhs *FunctionOptions) bool { return reflect.DeepEqual(f.opt, rhs.opt) }
 
+type NullSelectionBehavior int8
+
+const (
+	DropNulls NullSelectionBehavior = iota
+	EmitNulls
+)
+
+type FilterOptions struct {
+	NullSelectionBehavior NullSelectionBehavior `compute:"null_selection_behavior"`
+}
+
+func (FilterOptions) TypeName() string { return "FilterOptions" }
+
 type Call struct {
 	funcName string
 	args     []Expression
@@ -196,6 +213,7 @@ type Call struct {
 	b boundRef
 }
 
+func (c *Call) bound() boundRef      { return c.b }
 func (c *Call) IsNullLiteral() bool  { return false }
 func (c *Call) FieldRef() *FieldRef  { return nil }
 func (c *Call) Descr() ValueDescr    { return c.descr }

@@ -27,6 +27,7 @@ import (
 
 	"github.com/apache/arrow/go/arrow"
 	"github.com/apache/arrow/go/arrow/array"
+	"github.com/apache/arrow/go/arrow/internal/testing/types"
 	"github.com/apache/arrow/go/arrow/memory"
 	"github.com/stretchr/testify/assert"
 )
@@ -249,4 +250,41 @@ func TestBindExpression(t *testing.T) {
 	i32.Nullable = true
 	exp := arrow.StructOf(i32, schema.Field(2))
 	assert.True(t, arrow.TypeEqual(dt, exp), dt.(*arrow.StructType).String(), exp.String())
+}
+
+func TestFilter(t *testing.T) {
+	boringSchema := arrow.NewSchema([]arrow.Field{
+		{Name: "i64", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+		{Name: "f32", Type: arrow.PrimitiveTypes.Float32, Nullable: true},
+	}, nil)
+
+	input, err := types.RecordFromJSON(boringSchema, []byte(`[
+		{"i64": 0, "f32": 0.1},
+		{"i64": 0, "f32": 0.3},
+		{"i64": 1, "f32": 0.5},
+		{"i64": 2, "f32": 0.1},
+		{"i64": 0, "f32": 0.1},
+		{"i64": 0, "f32": 0.4},
+		{"i64": 0, "f32": 1.0}
+	]`))
+	assert.NoError(t, err)
+
+	expr := Greater(NewFieldRef("f32"), NewLiteral(float32(0.3)))
+	ctx := ExecContext(context.Background())
+	defer ReleaseContext(ctx)
+	bound := BindExpression(ctx, memory.DefaultAllocator, expr, boringSchema)
+
+	mask, err := ExecuteScalarExprWithSchema(ctx, memory.DefaultAllocator, boringSchema, input, bound)
+	assert.NoError(t, err)
+
+	out, err := Filter(ctx, memory.DefaultAllocator, NewDatum(input), mask, FilterOptions{})
+	assert.NoError(t, err)
+
+	expected, _ := types.RecordFromJSON(boringSchema, []byte(`[
+		{"i64": 1, "f32": 0.5},
+		{"i64": 0, "f32": 0.4},
+		{"i64": 0, "f32": 1.0}
+	]`))
+
+	assert.True(t, out.Equals(NewDatum(expected)))
 }

@@ -339,6 +339,23 @@ func (b *RecordBuilder) NewRecord() Record {
 	return NewRecord(b.schema, cols, rows)
 }
 
+func RecordToStructArray(rec Record) *Struct {
+	cols := make([]*Data, rec.NumCols())
+	for i, c := range rec.Columns() {
+		cols[i] = c.Data()
+	}
+
+	data := NewData(arrow.StructOf(rec.Schema().Fields()...), int(rec.NumRows()), []*memory.Buffer{nil}, cols, 0, 0)
+	defer data.Release()
+
+	return NewStructData(data)
+}
+
+func RecordFromStructArray(in *Struct) Record {
+	schema := arrow.NewSchema(in.DataType().(*arrow.StructType).Fields(), nil)
+	return NewRecord(schema, in.fields, int64(in.Len()))
+}
+
 var (
 	_ Record       = (*simpleRecord)(nil)
 	_ RecordReader = (*simpleRecords)(nil)

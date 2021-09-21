@@ -25,6 +25,9 @@
 #include "abi.h"
 #include "../memory/internal/cgoarrow/helpers.h"
 #include "arrow/record_batch.h"
+#include "arrow/array/util.h"
+#include "arrow/util/key_value_metadata.h"
+#include "arrow/compute/function_internal.h"
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
 #include "arrow/compute/exec.h"
@@ -143,6 +146,59 @@ int arrow_compute_bound_expr_simplify_guarantee(BoundExpression expr,
     return 0;
 }
 
+arrow::Status export_datum(const arrow::Datum& datum, struct ArrowComputeInputOutput* result) {
+    switch (datum.kind()) {
+    case arrow::Datum::RECORD_BATCH:
+        return arrow::ExportRecordBatch(*datum.record_batch(), result->data, result->schema);
+    case arrow::Datum::ARRAY:
+        {
+            auto status = arrow::ExportArray(*datum.make_array(), result->data);
+            if (!status.ok()) {
+                return status;
+            }
+            return arrow::ExportField(arrow::Field("array", datum.type()), result->schema);
+        }
+    case arrow::Datum::SCALAR:
+        auto status = arrow::MakeArrayFromScalar(*datum.scalar(), 1);
+        if (!status.ok()) {
+            return status.status();
+        }
+        arrow::ExportField(arrow::Field("scalar", datum.type()), result->schema);
+        return arrow::ExportArray(*status.MoveValueUnsafe(), result->data);
+    }
+
+    return arrow::Status::NotImplemented("only record batch, array and scalar is implemented");
+}
+
+int arrow_compute_execute_scalar_expr_schema(ExecContext ctx,
+                                             struct ArrowSchema* full_schema, struct ArrowComputeInputOutput* partial_input,
+                                             BoundExpression expr, struct ArrowComputeInputOutput* result) {
+    auto exec_context = retrieve_instance<arrow::compute::ExecContext>(ctx);
+    auto bound = retrieve_instance<arrow::compute::Expression>(expr);
+
+    auto schema = arrow::ImportSchema(full_schema).ValueOrDie();
+    auto input = arrow::ImportRecordBatch(partial_input->data, partial_input->schema);
+    if (!input.ok()) {
+        std::cerr << input.status().message() << std::endl;
+        return 2;
+    }        
+    auto in = arrow::Datum(input.MoveValueUnsafe());
+
+    auto output = arrow::compute::ExecuteScalarExpression(*bound, *schema, in, exec_context.get());
+    if (!output.ok()) {
+        std::cerr << output.status().message() << std::endl;
+        return 2;
+    }
+
+    auto status = export_datum(output.ValueOrDie(), result);
+    if (!status.ok()) {
+        std::cerr << output.status().message() << std::endl;
+        return 3;
+    }    
+
+    return 0;
+}
+
 int arrow_compute_execute_scalar_expr(ExecContext ctx,
                                   struct ArrowComputeInputOutput* partial_input,
                                   const uint8_t* serialized_expr, const int serialized_len,
@@ -176,5 +232,55 @@ int arrow_compute_execute_scalar_expr(ExecContext ctx,
         return 4;
     }
     
+    return 0;
+}
+
+int call_function(ExecContext ctx, const char* func_name, struct ArrowComputeInputOutput* args, 
+                  struct ArrowComputeInputOutput* options, struct ArrowComputeInputOutput* results) {
+    auto exec_context = retrieve_instance<arrow::compute::ExecContext>(ctx);
+
+    auto input = arrow::ImportRecordBatch(args->data, args->schema);
+    if (!input.ok()) {
+        std::cerr << input.status().message() << std::endl;
+        return 2;
+    }        
+    auto batch = input.MoveValueUnsafe();
+
+    const auto& schema = batch->schema();
+    std::vector<arrow::Datum> func_args;
+    for (size_t i = 0; i < batch->num_columns(); ++i) {
+        const auto& field = schema->field(i);
+        const std::string datumtype = field->metadata()->Get("arrow::datum::type").ValueOr("");
+        if (datumtype == "scalar") {
+            func_args.emplace_back(batch->column(i)->GetScalar(0).ValueOrDie());
+        } else if (datumtype == "array") {
+            func_args.emplace_back(batch->column(i));
+        } else if (datumtype == "record") {            
+            auto status = arrow::RecordBatch::FromStructArray(batch->column(i));
+            if (!status.ok()) {
+                std::cerr << status.status().message() << std::endl;
+                return 3;
+            }
+            func_args.emplace_back(status.MoveValueUnsafe());
+        } else {
+            return 4;
+        }
+    }
+
+    auto options_scalar = arrow::ImportArray(options->data, options->schema).ValueOrDie()->GetScalar(0).ValueOrDie();    
+    auto func_options = arrow::compute::internal::FunctionOptionsFromStructScalar(arrow::checked_cast<const arrow::StructScalar&>(*options_scalar)).ValueOrDie();
+
+    auto resultstatus = arrow::compute::CallFunction(std::string(func_name), func_args, func_options.get(), exec_context.get());
+    if (!resultstatus.ok()) {
+        std::cerr << resultstatus.status().message() << std::endl;
+        return 5;
+    }
+
+    auto status = export_datum(resultstatus.MoveValueUnsafe(), results);
+    if (!status.ok()) {
+        std::cerr << status.message() << std::endl;
+        return 6;
+    }
+
     return 0;
 }

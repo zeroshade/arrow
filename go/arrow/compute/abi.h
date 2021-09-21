@@ -30,13 +30,13 @@ typedef uintptr_t ExecContext;
 
 struct ArrowComputeInputOutput {
     struct ArrowSchema* schema;
-    struct ArrowArray* data;
+    struct ArrowArray* data;    
 };
 
 inline struct ArrowComputeInputOutput get_io() {
     return (struct ArrowComputeInputOutput) {
         .schema = (struct ArrowSchema*)malloc(sizeof(struct ArrowSchema)),
-		.data = (struct ArrowArray*)malloc(sizeof(struct ArrowArray)),
+		.data = (struct ArrowArray*)malloc(sizeof(struct ArrowArray)),        
     };
 }
 
@@ -68,10 +68,19 @@ bool arrow_compute_bound_is_scalar(BoundExpression bound);
 bool arrow_compute_function_scalar(const char* funcname);
 BoundExpression arrow_compute_get_bound_arg(BoundExpression bound, size_t idx);
 
+int arrow_compute_execute_scalar_expr_schema(ExecContext ctx,
+    struct ArrowSchema* full_schema, struct ArrowComputeInputOutput* partial_input,
+    BoundExpression expr, struct ArrowComputeInputOutput* result);
+
 int arrow_compute_execute_scalar_expr(ExecContext ctx, 
     struct ArrowComputeInputOutput* partial_input,
     const uint8_t* serialized_expr, const int serialized_len,
     struct ArrowComputeInputOutput* result);
+
+int call_function(ExecContext ctx, const char* func_name, 
+                  struct ArrowComputeInputOutput* args,
+                  struct ArrowComputeInputOutput* options, 
+                  struct ArrowComputeInputOutput* result);
 
 #ifdef __cplusplus
 }

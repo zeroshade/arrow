@@ -18,7 +18,6 @@ package dataset_test
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"reflect"
@@ -29,6 +28,7 @@ import (
 	"github.com/apache/arrow/go/arrow/compute"
 	"github.com/apache/arrow/go/arrow/dataset"
 	"github.com/apache/arrow/go/arrow/internal/testing/tools"
+	"github.com/apache/arrow/go/arrow/internal/testing/types"
 	"github.com/apache/arrow/go/arrow/memory"
 	"github.com/stretchr/testify/suite"
 )
@@ -157,7 +157,7 @@ func (d *DatasetTestSuite) assertScannerEquals(rdr array.RecordReader, scanner *
 		lhs := rdr.Record()
 		d.NotNil(lhs)
 
-		d.True(array.RecordEqual(lhs, rec.RecordBatch))
+		d.Truef(array.RecordEqual(lhs, rec.RecordBatch), "expected: %s\ngot: %s", lhs, rec.RecordBatch)
 		lhs.Release()
 		rec.RecordBatch.Release()
 	}
@@ -402,7 +402,7 @@ func expectedOutput(schema *arrow.Schema, data []string) []array.Record {
 	out := make([]array.Record, len(data))
 	for i, d := range data {
 		var err error
-		out[i], err = tools.RecordFromJSON(schema, []byte(d))
+		out[i], err = types.RecordFromJSON(schema, []byte(d))
 		if err != nil {
 			panic(err)
 		}
@@ -493,7 +493,7 @@ func (j *JSONRecordBatchFileFormat) ScanFile(opts *dataset.ScanOptions, fragment
 		return nil, err
 	}
 
-	rec, err := tools.RecordFromJSON(schema, data)
+	rec, err := types.RecordFromJSON(schema, data)
 	if err != nil {
 		return nil, err
 	}
@@ -551,11 +551,18 @@ func (ete *EndToEndSuite) TestDirectoryPartitioning() {
 			PartitioningFactory: dataset.NewDirectoryPartitioningFactory([]string{"year", "month", "country"})})
 	ete.NoError(err)
 
+	ete.NoError(dataset.SetProjectionNames(&ete.opts, []string{"sales", "model", "country"}))
 	ete.setFilter(compute.And(compute.Equal(compute.NewFieldRef("year"), compute.NewLiteral(2019)), compute.Greater(compute.NewFieldRef("sales"), compute.NewLiteral(100.0))))
 	scanner, err := dataset.NewScanner(&ete.opts, fsd)
 	ete.NoError(err)
 
-	for rec := range scanner.ScanBatches() {
-		fmt.Println(rec)
-	}
+	expected, _ := types.RecordFromJSON(ete.opts.ProjectedSchema, []byte(`[
+		{"model": "3", "sales": 273.5, "country": "US"},
+		{"model": "3", "sales": 152.25, "country": "CA"}
+	]`))
+
+	rdr, _ := array.NewRecordReader(ete.opts.ProjectedSchema, []array.Record{expected.NewSlice(0, 1), expected.NewSlice(1, 2)})
+	defer rdr.Release()
+
+	ete.assertScannerEquals(rdr, scanner, true)
 }

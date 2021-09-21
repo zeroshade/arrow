@@ -311,6 +311,11 @@ func MakeScalar(val interface{}) Scalar {
 		return NewDayTimeIntervalScalar(v)
 	case arrow.TimeUnit:
 		return NewUint32Scalar(uint32(v))
+	default:
+		testval := reflect.ValueOf(v)
+		if testval.Type().ConvertibleTo(reflect.TypeOf(uint32(0))) {
+			return NewUint32Scalar(uint32(testval.Convert(reflect.TypeOf(uint32(0))).Uint()))
+		}
 	}
 
 	panic(xerrors.Errorf("makescalar not implemented for type value %#T", val))

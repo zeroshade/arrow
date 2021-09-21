@@ -19,8 +19,11 @@ package dataset
 import (
 	"io"
 
+	"github.com/apache/arrow/go/arrow"
 	"github.com/apache/arrow/go/arrow/array"
 	"github.com/apache/arrow/go/arrow/compute"
+	"github.com/apache/arrow/go/arrow/internal/debug"
+	"github.com/apache/arrow/go/arrow/scalar"
 )
 
 type TaggedRecord struct {
@@ -32,6 +35,29 @@ type TaggedRecord struct {
 type filterAndProjectScanTask struct {
 	ScanTask
 	partition compute.Expression
+}
+
+func (ft *filterAndProjectScanTask) Execute() RecordGenerator {
+
+	it := ft.ScanTask.Execute()
+	simplifiedFilter, err := compute.SimplifyWithGuarantee(ft.Options().Filter, ft.partition)
+	if err != nil {
+		out := make(chan RecordMessage)
+		out <- RecordMessage{Err: err}
+		close(out)
+		return out
+	}
+
+	simplifiedProjection, err := compute.SimplifyWithGuarantee(ft.Options().Projection, ft.partition)
+	if err != nil {
+		out := make(chan RecordMessage)
+		out <- RecordMessage{Err: err}
+		close(out)
+		return out
+	}
+
+	filterGen := filterRecordBatches(it, simplifiedFilter, ft.Options())
+	return projectRecordBatches(filterGen, simplifiedProjection, ft.Options())
 }
 
 func getScanTaskGenerator(frag FragmentIterator, opts *ScanOptions) ScanTaskGenerator {
@@ -125,6 +151,103 @@ func (s *Scanner) ScanBatches() <-chan TaggedRecord {
 				out <- TaggedRecord{m.Record, st.Task.Fragment(), nil}
 			}
 			// }(st.Task)
+		}
+	}()
+	return out
+}
+
+func filterRecord(in array.Record, filter compute.Expression, opts *ScanOptions) (array.Record, error) {
+	mask, err := compute.ExecuteScalarExprWithSchema(opts.Ctx, opts.Mem, opts.DatasetSchema, in, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	if ms, ok := mask.(*compute.ScalarDatum); ok {
+		if ms.Value.IsValid() && ms.Value.(*scalar.Boolean).Value {
+			return in, nil
+		}
+		defer in.Release()
+		return in.NewSlice(0, 0), nil
+	}
+
+	defer in.Release()
+
+	input := compute.NewDatum(in)
+	defer input.Release()
+
+	filtered, err := compute.Filter(opts.Ctx, opts.Mem, input, mask, compute.FilterOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	return filtered.(*compute.RecordDatum).Value, err
+}
+
+func filterRecordBatches(it RecordGenerator, filter compute.Expression, opts *ScanOptions) RecordGenerator {
+	out := make(chan RecordMessage)
+	go func() {
+		defer close(out)
+
+		for msg := range it {
+			if msg.Err != nil {
+				out <- msg
+				break
+			}
+
+			msg.Record, msg.Err = filterRecord(msg.Record, filter, opts)
+			out <- msg
+			if msg.Err != nil {
+				break
+			}
+		}
+	}()
+	return out
+}
+
+func projectRecord(in array.Record, projection compute.Expression, opts *ScanOptions) (array.Record, error) {
+	projected, err := compute.ExecuteScalarExprWithSchema(opts.Ctx, opts.Mem, opts.DatasetSchema, in, projection)
+	if err != nil {
+		return nil, err
+	}
+	defer projected.Release()
+
+	var arr array.Interface
+
+	debug.Assert(projected.(compute.ArrayLikeDatum).Type().ID() == arrow.STRUCT, "invalid return from projection")
+	if projected.(compute.ArrayLikeDatum).Descr().Shape == compute.ShapeScalar {
+		arr, err = scalar.MakeArrayFromScalar(projected.(*compute.ScalarDatum).Value, int(in.NumRows()), opts.Mem)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		arr = projected.(*compute.ArrayDatum).MakeArray()
+	}
+	defer arr.Release()
+
+	out := array.RecordFromStructArray(arr.(*array.Struct))
+	defer out.Release()
+
+	meta := in.Schema().Metadata()
+	newSchema := arrow.NewSchema(out.Schema().Fields(), &meta)
+	return array.NewRecord(newSchema, out.Columns(), out.NumRows()), nil
+}
+
+func projectRecordBatches(it RecordGenerator, projection compute.Expression, opts *ScanOptions) RecordGenerator {
+	out := make(chan RecordMessage)
+	go func() {
+		defer close(out)
+
+		for msg := range it {
+			if msg.Err != nil {
+				out <- msg
+				break
+			}
+
+			msg.Record, msg.Err = projectRecord(msg.Record, projection, opts)
+			out <- msg
+			if msg.Err != nil {
+				break
+			}
 		}
 	}()
 	return out

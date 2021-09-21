@@ -26,13 +26,16 @@ import "C"
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
+	"strconv"
 	"unsafe"
 
 	"github.com/apache/arrow/go/arrow"
 	"github.com/apache/arrow/go/arrow/array"
 	"github.com/apache/arrow/go/arrow/cdata"
 	"github.com/apache/arrow/go/arrow/memory"
+	"github.com/apache/arrow/go/arrow/scalar"
 	"golang.org/x/xerrors"
 )
 
@@ -54,6 +57,56 @@ func convCArr(arr *C.struct_ArrowArray) *cdata.CArrowArray {
 
 func convCSchema(schema *C.struct_ArrowSchema) *cdata.CArrowSchema {
 	return (*cdata.CArrowSchema)(unsafe.Pointer(schema))
+}
+
+func ExecuteScalarExprWithSchema(ctx context.Context, mem memory.Allocator, schema *arrow.Schema, rb array.Record, expr Expression) (out Datum, err error) {
+	ec := ctx.Value(execCtxKey{}).(C.ExecContext)
+	input := C.get_io()
+	defer C.release_io(&input)
+
+	cdata.ExportArrowRecordBatch(rb, convCArr(input.data), convCSchema(input.schema))
+	defer cdata.CArrowArrayRelease(convCArr(input.data))
+	defer cdata.CArrowSchemaRelease(convCSchema(input.schema))
+
+	var fullSchema C.struct_ArrowSchema
+	cdata.ExportArrowSchema(schema, convCSchema(&fullSchema))
+	defer cdata.CArrowSchemaRelease(convCSchema(&fullSchema))
+
+	output := C.get_io()
+	defer C.release_io(&output)
+
+	if ec := C.arrow_compute_execute_scalar_expr_schema(ec, &fullSchema, &input, C.BoundExpression(expr.bound()), &output); ec != 0 {
+		return nil, xerrors.Errorf("got errorcode: %d", ec)
+	}
+
+	defer cdata.CArrowArrayRelease(convCArr(output.data))
+	defer cdata.CArrowSchemaRelease(convCSchema(output.schema))
+
+	f, arr, err := cdata.ImportCArray((*cdata.CArrowArray)(unsafe.Pointer(output.data)), (*cdata.CArrowSchema)(unsafe.Pointer(output.schema)))
+	if err != nil {
+		return nil, err
+	}
+	defer arr.Release()
+
+	switch {
+	case arr.Len() == 1:
+		sc, err := scalar.GetScalar(arr, 0)
+		if err != nil {
+			return nil, err
+		}
+		return NewDatum(sc), nil
+	case f.Type.ID() == arrow.STRUCT:
+		st := arr.(*array.Struct)
+		cols := make([]array.Interface, st.NumField())
+		for i := 0; i < st.NumField(); i++ {
+			cols[i] = st.Field(i)
+		}
+		rec := array.NewRecord(arrow.NewSchema(st.DataType().(*arrow.StructType).Fields(), &f.Metadata), cols, int64(cols[0].Len()))
+		defer rec.Release()
+		return NewDatum(rec), nil
+	default:
+		return NewDatum(arr), nil
+	}
 }
 
 func ExecuteScalarExpr(ctx context.Context, mem memory.Allocator, rb array.Record, expr Expression) (out Datum, err error) {
@@ -115,90 +168,6 @@ func (b boundRef) isSatisfiable() bool {
 func (b boundRef) release() {
 	C.arrow_compute_bound_expr_release(C.BoundExpression(b))
 }
-
-// type BoundExpression struct {
-// 	b  C.BoundExpression
-// 	dt arrow.DataType
-
-// 	origExpr Expression
-// 	hash     uint64
-// }
-
-// func (b BoundExpression) IsBound() bool {
-// 	return b.b != 0
-// }
-
-// func (b BoundExpression) IsScalarExpr() bool {
-// 	if _, ok := b.origExpr.(*Call); ok {
-// 		return C.arrow_compute_bound_is_scalar(b.b) == C._Bool(true)
-// 	}
-// 	return b.origExpr.IsScalarExpr()
-// }
-
-// func (b BoundExpression) IsNullLiteral() bool {
-// 	return b.origExpr.IsNullLiteral()
-// }
-
-// func (b *BoundExpression) IsSatisfiable() bool {
-// 	if lit, ok := b.origExpr.(*Literal); ok {
-// 		return lit.IsSatisfiable()
-// 	}
-
-// 	dt := b.Type()
-// 	return dt == nil || dt.ID() != arrow.NULL
-// }
-
-// func (b *BoundExpression) FieldRef() *FieldRef {
-// 	return b.origExpr.FieldRef()
-// }
-
-// func (b *BoundExpression) Descr() ValueDescr {
-// 	switch e := b.origExpr.(type) {
-// 	case *Literal:
-// 		return e.Descr()
-// 	case *Parameter:
-// 		return ValueDescr{Shape: ShapeArray, Type: b.Type()}
-// 	case *Call:
-// 		if b.IsScalarExpr() {
-// 			return ValueDescr{Shape: ShapeScalar, Type: b.Type()}
-// 		}
-// 		return ValueDescr{Shape: ShapeArray, Type: b.Type()}
-// 	}
-// 	return ValueDescr{}
-// }
-
-// func (b BoundExpression) Equals(rhs Expression) bool {
-// 	return b.origExpr.Equals(rhs)
-// }
-
-// func (b BoundExpression) Hash() uint64 {
-// 	return b.hash
-// }
-
-// func (b BoundExpression) Release() {
-// 	C.arrow_compute_bound_expr_release(b.b)
-// }
-
-// func (b *BoundExpression) Type() arrow.DataType {
-// 	dt, err := b.DataType()
-// 	if err != nil {
-// 		panic(err)
-// 	}
-// 	return dt
-// }
-
-// func (b *BoundExpression) DataType() (arrow.DataType, error) {
-// 	if b.dt == nil {
-// 		var cschema C.struct_ArrowSchema
-// 		C.arrow_compute_bound_expr_type(b.b, &cschema)
-// 		field, err := cdata.ImportCArrowField(convCSchema(&cschema))
-// 		if err != nil {
-// 			return nil, err
-// 		}
-// 		b.dt = field.Type
-// 	}
-// 	return b.dt, nil
-// }
 
 func getBoundType(b boundRef) (arrow.DataType, error) {
 	var cschema C.struct_ArrowSchema
@@ -296,4 +265,98 @@ func SimplifyWithGuarantee(expr, guaranteedTruePred Expression) (Expression, err
 	}
 
 	return &unknownBoundExpr{b: boundRef(out)}, nil
+}
+
+func CallFunction(ctx context.Context, mem memory.Allocator, funcName string, args []Datum, options *FunctionOptions) (Datum, error) {
+	ec := ctx.Value(execCtxKey{}).(C.ExecContext)
+
+	argsIO := C.get_io()
+	defer C.release_io(&argsIO)
+
+	optionsIO := C.get_io()
+	defer C.release_io(&optionsIO)
+
+	output := C.get_io()
+	defer C.release_io(&output)
+
+	const datumtypekey = "arrow::datum::type"
+
+	fields := make([]arrow.Field, len(args))
+	cols := make([]array.Interface, len(args))
+	for i, a := range args {
+		var arr array.Interface
+		var val string
+		switch a.Kind() {
+		case KindRecordBatch:
+			val = "record"
+			arr = array.RecordToStructArray(a.(*RecordDatum).Value)
+		case KindArray:
+			val = "array"
+			arr = a.(*ArrayDatum).MakeArray()
+		}
+
+		defer arr.Release()
+		cols[i] = arr
+		fields[i] = arrow.Field{Name: strconv.Itoa(i), Type: arr.DataType(), Nullable: true, Metadata: arrow.NewMetadata([]string{datumtypekey}, []string{val})}
+	}
+
+	argRec := array.NewRecord(arrow.NewSchema(fields, nil), cols, -1)
+	defer argRec.Release()
+
+	cdata.ExportArrowRecordBatch(argRec, convCArr(argsIO.data), convCSchema(argsIO.schema))
+	defer cdata.CArrowArrayRelease(convCArr(argsIO.data))
+	defer cdata.CArrowSchemaRelease(convCSchema(argsIO.schema))
+
+	optscalar, err := options.ToStructScalar(mem)
+	if err != nil {
+		return nil, err
+	}
+
+	optarr, err := scalar.MakeArrayFromScalar(optscalar, 1, mem)
+	if err != nil {
+		return nil, err
+	}
+	defer optarr.Release()
+
+	cdata.ExportArrowArray(optarr, convCArr(optionsIO.data), convCSchema(optionsIO.schema))
+
+	cfuncName := C.CString(funcName)
+	defer C.free(unsafe.Pointer(cfuncName))
+
+	if ec := C.call_function(ec, cfuncName, &argsIO, &optionsIO, &output); ec != 0 {
+		return nil, fmt.Errorf("got error code: %d", ec)
+	}
+
+	defer cdata.CArrowArrayRelease(convCArr(output.data))
+	defer cdata.CArrowSchemaRelease(convCSchema(output.schema))
+
+	f, arr, err := cdata.ImportCArray((*cdata.CArrowArray)(unsafe.Pointer(output.data)), (*cdata.CArrowSchema)(unsafe.Pointer(output.schema)))
+	if err != nil {
+		return nil, err
+	}
+	defer arr.Release()
+
+	switch f.Name {
+	case "scalar":
+		sc, err := scalar.GetScalar(arr, 0)
+		if err != nil {
+			return nil, err
+		}
+		return NewDatum(sc), nil
+	case "array":
+		return NewDatum(arr), nil
+	default:
+		st := arr.(*array.Struct)
+		cols := make([]array.Interface, st.NumField())
+		for i := 0; i < st.NumField(); i++ {
+			cols[i] = st.Field(i)
+		}
+		rec := array.NewRecord(arrow.NewSchema(st.DataType().(*arrow.StructType).Fields(), &f.Metadata), cols, int64(cols[0].Len()))
+		defer rec.Release()
+		return NewDatum(rec), nil
+	}
+}
+
+func Filter(ctx context.Context, mem memory.Allocator, in, mask Datum, opts FilterOptions) (Datum, error) {
+	return CallFunction(ctx, mem, "filter", []Datum{in, mask}, NewFunctionOption(opts))
 }
