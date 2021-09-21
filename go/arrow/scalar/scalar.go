@@ -17,7 +17,9 @@
 package scalar
 
 import (
+	"encoding/binary"
 	"fmt"
+	"hash/maphash"
 	"math"
 	"math/big"
 	"reflect"
@@ -28,6 +30,7 @@ import (
 	"github.com/apache/arrow/go/arrow/array"
 	"github.com/apache/arrow/go/arrow/bitutil"
 	"github.com/apache/arrow/go/arrow/decimal128"
+	"github.com/apache/arrow/go/arrow/endian"
 	"github.com/apache/arrow/go/arrow/float16"
 	"github.com/apache/arrow/go/arrow/internal/debug"
 	"github.com/apache/arrow/go/arrow/memory"
@@ -686,4 +689,81 @@ func MakeArrayFromScalar(sc Scalar, length int, mem memory.Allocator) (array.Int
 	default:
 		return nil, xerrors.Errorf("array from scalar not yet implemented for type %s", sc.DataType())
 	}
+}
+
+func HashScalar(seed maphash.Seed, s Scalar) uint64 {
+	var h maphash.Hash
+	h.SetSeed(seed)
+	binary.Write(&h, endian.Native, arrow.HashType(seed, s.DataType()))
+
+	out := h.Sum64()
+	if !s.IsValid() {
+		return out
+	}
+
+	hash := func() {
+		out ^= h.Sum64()
+		h.Reset()
+	}
+
+	valueHash := func(v interface{}) {
+		switch v := v.(type) {
+		case arrow.Date32:
+			binary.Write(&h, endian.Native, uint32(v))
+			hash()
+		case arrow.Time32:
+			binary.Write(&h, endian.Native, uint32(v))
+			hash()
+		case arrow.MonthInterval:
+			binary.Write(&h, endian.Native, uint32(v))
+			hash()
+		case arrow.Duration:
+			binary.Write(&h, endian.Native, uint64(v))
+			hash()
+		case arrow.Date64:
+			binary.Write(&h, endian.Native, uint64(v))
+			hash()
+		case arrow.Time64:
+			binary.Write(&h, endian.Native, uint64(v))
+			hash()
+		case arrow.Timestamp:
+			binary.Write(&h, endian.Native, uint64(v))
+			hash()
+		case float16.Num:
+			binary.Write(&h, endian.Native, v.Uint16())
+			hash()
+		case decimal128.Num:
+			binary.Write(&h, endian.Native, v.LowBits())
+			hash()
+			binary.Write(&h, endian.Native, uint64(v.HighBits()))
+			hash()
+		}
+	}
+
+	h.Reset()
+	switch s := s.(type) {
+	case *Null:
+		return out
+	case *Extension:
+		out ^= HashScalar(seed, s.Value)
+	case *DayTimeInterval:
+		valueHash(s.Value.Days)
+		valueHash(s.Value.Milliseconds)
+	case PrimitiveScalar:
+		h.Write(s.Data())
+		hash()
+	case TemporalScalar:
+		valueHash(s.value())
+	case ListScalar:
+		array.ArrayHash(&h, s.List().Data())
+		hash()
+	case *Struct:
+		for _, c := range s.Value {
+			if c.IsValid() {
+				out ^= HashScalar(seed, c)
+			}
+		}
+	}
+
+	return out
 }

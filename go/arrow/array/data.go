@@ -17,9 +17,13 @@
 package array
 
 import (
+	"encoding/binary"
+	"hash/maphash"
+	"math/bits"
 	"sync/atomic"
 
 	"github.com/apache/arrow/go/arrow"
+	"github.com/apache/arrow/go/arrow/endian"
 	"github.com/apache/arrow/go/arrow/internal/debug"
 	"github.com/apache/arrow/go/arrow/memory"
 )
@@ -176,4 +180,20 @@ func NewSliceData(data *Data, i, j int64) *Data {
 	}
 
 	return o
+}
+
+func ArrayHash(h *maphash.Hash, a *Data) {
+	if bits.UintSize == 32 {
+		binary.Write(h, endian.Native, int32(a.Len()))
+		binary.Write(h, endian.Native, int32(a.NullN()))
+	} else {
+		binary.Write(h, endian.Native, int64(a.Len()))
+		binary.Write(h, endian.Native, int64(a.NullN()))
+	}
+	if len(a.Buffers()) > 0 && a.Buffers()[0] != nil {
+		h.Write(a.Buffers()[0].Bytes())
+	}
+	for _, c := range a.childData {
+		ArrayHash(h, c)
+	}
 }

@@ -36,6 +36,9 @@ type hasTypename interface {
 var hasTypenameType = reflect.TypeOf((*hasTypename)(nil)).Elem()
 
 func ToScalar(val interface{}, mem memory.Allocator) (Scalar, error) {
+	if v, ok := val.(arrow.DataType); ok {
+		return MakeScalar(v), nil
+	}
 	v := reflect.Indirect(reflect.ValueOf(val))
 	switch v.Kind() {
 	case reflect.Struct:
@@ -248,6 +251,8 @@ func MakeScalarParam(val interface{}, dt arrow.DataType) (Scalar, error) {
 // MakeScalar creates a scalar of the passed in type via reflection.
 func MakeScalar(val interface{}) Scalar {
 	switch v := val.(type) {
+	case arrow.DataType:
+		return MakeNullScalar(v)
 	case nil:
 		return ScalarNull
 	case bool:

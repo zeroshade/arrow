@@ -42,6 +42,13 @@ func ListOf(t DataType) *ListType {
 func (*ListType) ID() Type         { return LIST }
 func (*ListType) Name() string     { return "list" }
 func (t *ListType) String() string { return fmt.Sprintf("list<item: %v>", t.elem) }
+func (t *ListType) Fingerprint() string {
+	child := t.elem.Fingerprint()
+	if len(child) > 0 {
+		return typeIdFingerprint(t) + "{" + child + "}"
+	}
+	return ""
+}
 
 // Elem returns the ListType's element type.
 func (t *ListType) Elem() DataType { return t.elem }
@@ -72,6 +79,14 @@ func (*FixedSizeListType) ID() Type     { return FIXED_SIZE_LIST }
 func (*FixedSizeListType) Name() string { return "fixed_size_list" }
 func (t *FixedSizeListType) String() string {
 	return fmt.Sprintf("fixed_size_list<item: %v>[%d]", t.elem, t.n)
+}
+
+func (t *FixedSizeListType) Fingerprint() string {
+	child := t.elem.Fingerprint()
+	if len(child) > 0 {
+		return fmt.Sprintf("%s[%d]{%s}", typeIdFingerprint(t), t.n, child)
+	}
+	return ""
 }
 
 // Elem returns the FixedSizeListType's element type.
@@ -153,6 +168,22 @@ func (t *StructType) FieldIdx(name string) (int, bool) {
 	return i, ok
 }
 
+func (t *StructType) Fingerprint() string {
+	var b strings.Builder
+	b.WriteString(typeIdFingerprint(t))
+	b.WriteByte('{')
+	for _, c := range t.fields {
+		child := c.Fingerprint()
+		if len(child) == 0 {
+			return ""
+		}
+		b.WriteString(child)
+		b.WriteByte(';')
+	}
+	b.WriteByte('}')
+	return b.String()
+}
+
 type MapType struct {
 	value      *ListType
 	KeysSorted bool
@@ -187,6 +218,19 @@ func (t *MapType) ItemField() Field       { return t.value.Elem().(*StructType).
 func (t *MapType) ItemType() DataType     { return t.ItemField().Type }
 func (t *MapType) ValueType() *StructType { return t.value.Elem().(*StructType) }
 
+func (t *MapType) Fingerprint() string {
+	keyFingerprint := t.KeyType().Fingerprint()
+	itemFingerprint := t.ItemType().Fingerprint()
+	if len(keyFingerprint) == 0 || len(itemFingerprint) == 0 {
+		return ""
+	}
+
+	if t.KeysSorted {
+		return fmt.Sprintf("%ss{%s%s}", typeIdFingerprint(t), keyFingerprint, itemFingerprint)
+	}
+	return fmt.Sprintf("%s{%s%s}", typeIdFingerprint(t), keyFingerprint, itemFingerprint)
+}
+
 type Field struct {
 	Name     string   // Field name
 	Type     DataType // The field's data type
@@ -194,17 +238,59 @@ type Field struct {
 	Metadata Metadata // The field's metadata, if any
 }
 
+func (f Field) Fingerprint() string {
+	typeFingerprint := f.Type.Fingerprint()
+	if len(typeFingerprint) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteByte('F')
+	if f.Nullable {
+		b.WriteByte('n')
+	} else {
+		b.WriteByte('N')
+	}
+	b.WriteString(f.Name)
+	b.WriteByte('{')
+	b.WriteString(typeFingerprint)
+	b.WriteByte('}')
+	return b.String()
+}
+
 func (f Field) HasMetadata() bool { return f.Metadata.Len() != 0 }
 
-func (f Field) Equal(o Field) bool {
+type equalOption struct {
+	checkMetadata bool
+}
+
+type EqualOption func(*equalOption)
+
+func WithCheckMetadata(v bool) EqualOption {
+	return func(e *equalOption) {
+		e.checkMetadata = v
+	}
+}
+
+func (f Field) Equal(o Field, opts ...EqualOption) bool {
+	eqopt := equalOption{checkMetadata: true}
+	for _, o := range opts {
+		o(&eqopt)
+	}
+
+	typeOpts := []TypeEqualOption{}
+	if eqopt.checkMetadata {
+		typeOpts = append(typeOpts, CheckMetadata())
+	}
+
 	switch {
 	case f.Name != o.Name:
 		return false
 	case f.Nullable != o.Nullable:
 		return false
-	case !TypeEqual(f.Type, o.Type, CheckMetadata()):
+	case !TypeEqual(f.Type, o.Type, typeOpts...):
 		return false
-	case !f.Metadata.Equal(o.Metadata):
+	case eqopt.checkMetadata && !f.Metadata.Equal(o.Metadata):
 		return false
 	}
 	return true
@@ -221,6 +307,49 @@ func (f Field) String() string {
 		fmt.Fprintf(o, "\n%*.smetadata: %v", len(f.Name)+2, "", f.Metadata)
 	}
 	return o.String()
+}
+
+func maybePromoteNullTypes(existing, other Field) *Field {
+	if existing.Type.ID() != NULL && other.Type.ID() != NULL {
+		return nil
+	}
+
+	if existing.Type.ID() == NULL {
+		other.Nullable = true
+		other.Metadata = existing.Metadata
+		return &other
+	}
+
+	existing.Nullable = true
+	return &existing
+}
+
+func (f Field) MergeWith(other Field, opts ...MergeOption) (Field, error) {
+	cfg := mergeCfg{promoteNullability: true}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	if f.Name != other.Name {
+		return f, fmt.Errorf("field %s doesn't have the same name as %s", f.Name, other.Name)
+	}
+
+	if f.Equal(other, WithCheckMetadata(false)) {
+		return f, nil
+	}
+
+	if cfg.promoteNullability {
+		if TypeEqual(f.Type, other.Type) {
+			f.Nullable = f.Nullable || other.Nullable
+			return f, nil
+		}
+		promoted := maybePromoteNullTypes(f, other)
+		if promoted != nil {
+			return *promoted, nil
+		}
+	}
+
+	return Field{}, fmt.Errorf("unable to merge: field %s has incompatible types: %s vs %s", f.Name, f.Type, other.Type)
 }
 
 var (

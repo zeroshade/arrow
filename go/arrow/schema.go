@@ -17,9 +17,12 @@
 package arrow
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/apache/arrow/go/arrow/internal/debug"
 )
 
 type Metadata struct {
@@ -219,4 +222,198 @@ func (s *Schema) String() string {
 		fmt.Fprintf(o, "\n  metadata: %v", meta)
 	}
 	return o.String()
+}
+
+func (s *Schema) HasDistinctFieldNames() bool {
+	for _, v := range s.index {
+		if len(v) > 1 {
+			return false
+		}
+	}
+	return true
+}
+
+type mergeCfg struct {
+	promoteNullability bool
+}
+
+type MergeOption func(*mergeCfg)
+
+func WithPromoteNullability(v bool) MergeOption {
+	return func(cfg *mergeCfg) {
+		cfg.promoteNullability = v
+	}
+}
+
+func UnifySchemas(schemas []*Schema, opts ...MergeOption) (*Schema, error) {
+	if len(schemas) == 0 {
+		return nil, errors.New("must provide at least one schema to unify")
+	}
+
+	if !schemas[0].HasDistinctFieldNames() {
+		return nil, errors.New("can't unify schema with duplicate field names")
+	}
+
+	bldr := NewSchemaBuilderFromSchema(schemas[0], ConflictMerge, opts...)
+	if len(schemas) == 1 {
+		return bldr.Finish(), nil
+	}
+
+	for _, s := range schemas[1:] {
+		if !s.HasDistinctFieldNames() {
+			return nil, errors.New("can't unify schema with duplicate field names")
+		}
+		if err := bldr.AddSchema(s); err != nil {
+			return nil, err
+		}
+	}
+	return bldr.Finish(), nil
+}
+
+type ConflictPolicy int8
+
+const (
+	ConflictAppend ConflictPolicy = iota
+	ConflictIgnore
+	ConflictReplace
+	ConflictMerge
+	ConflictError
+)
+
+var DefaultConflictPolicy = ConflictAppend
+
+type SchemaBuilder struct {
+	fields         []Field
+	nameToIndex    map[string][]int
+	metadata       Metadata
+	Policy         ConflictPolicy
+	fieldMergeOpts []MergeOption
+}
+
+type SchemaBuilderOption func(*SchemaBuilder)
+
+func NewSchemaBuilder(policy ConflictPolicy, fieldMergeOpts ...MergeOption) *SchemaBuilder {
+	return &SchemaBuilder{Policy: policy, fieldMergeOpts: fieldMergeOpts, nameToIndex: make(map[string][]int), fields: make([]Field, 0)}
+}
+
+func NewSchemaBuilderFromSchema(s *Schema, policy ConflictPolicy, fieldMergeOpts ...MergeOption) *SchemaBuilder {
+	ret := NewSchemaBuilder(policy, fieldMergeOpts...)
+	if s.HasMetadata() {
+		ret.metadata = s.meta.clone()
+	}
+
+	ret.fields = make([]Field, len(s.fields))
+	copy(ret.fields, s.fields)
+	for k, v := range s.index {
+		ret.nameToIndex[k] = v
+	}
+	return ret
+}
+
+const (
+	notFound       = -1
+	duplicateFound = -2
+)
+
+func lookupNameIndex(nameToIndex map[string][]int, name string) int {
+	idxes, ok := nameToIndex[name]
+	if !ok || len(idxes) == 0 {
+		return notFound
+	}
+
+	if len(idxes) > 1 {
+		return duplicateFound
+	}
+
+	return idxes[0]
+}
+
+func (sb *SchemaBuilder) appendField(f Field) {
+	idxes := sb.nameToIndex[f.Name]
+	if idxes == nil {
+		idxes = make([]int, 0, 1)
+	}
+	idxes = append(idxes, len(sb.fields))
+	sb.fields = append(sb.fields, f)
+	sb.nameToIndex[f.Name] = idxes
+}
+
+func (sb *SchemaBuilder) AddField(f Field) error {
+	if sb.Policy == ConflictAppend {
+		sb.appendField(f)
+		return nil
+	}
+
+	i := lookupNameIndex(sb.nameToIndex, f.Name)
+	switch {
+	case i == notFound:
+		sb.appendField(f)
+	case sb.Policy == ConflictIgnore:
+	case sb.Policy == ConflictError:
+		return errors.New("duplicate found, policy dictates to treat as an error")
+	case i == duplicateFound:
+		// cannot merge/replace when there's already more than one field
+		// in the builder because we can't decide which to merge/replace
+		return fmt.Errorf("cannot merge field %s more than one field with same name exists", f.Name)
+	case sb.Policy == ConflictReplace:
+		sb.fields[i] = f
+	case sb.Policy == ConflictMerge:
+		var err error
+		sb.fields[i], err = sb.fields[i].MergeWith(f, sb.fieldMergeOpts...)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (sb *SchemaBuilder) AddFields(fields []Field) error {
+	for _, f := range fields {
+		if err := sb.AddField(f); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (sb *SchemaBuilder) AddSchema(s *Schema) error {
+	debug.Assert(s != nil || len(s.fields) == 0, "addschema cannot recieve nil schema or no fields")
+	return sb.AddFields(s.fields)
+}
+
+func (sb *SchemaBuilder) AddSchemas(schemas []*Schema) error {
+	for _, s := range schemas {
+		if err := sb.AddSchema(s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (sb *SchemaBuilder) AddMetadata(metadata Metadata) {
+	sb.metadata = metadata.clone()
+}
+
+func (sb *SchemaBuilder) Reset() {
+	sb.fields = make([]Field, 0)
+	sb.nameToIndex = make(map[string][]int)
+	sb.metadata = NewMetadata(nil, nil)
+}
+
+func (sb *SchemaBuilder) Finish() *Schema {
+	return &Schema{fields: sb.fields, index: sb.nameToIndex, meta: sb.metadata}
+}
+
+func MergeSchemas(schemas []*Schema, policy ConflictPolicy) (*Schema, error) {
+	bldr := SchemaBuilder{Policy: policy}
+	if err := bldr.AddSchemas(schemas); err != nil {
+		return nil, err
+	}
+	return bldr.Finish(), nil
+}
+
+func SchemasAreCompatible(schemas []*Schema, policy ConflictPolicy) error {
+	_, err := MergeSchemas(schemas, policy)
+	return err
 }
