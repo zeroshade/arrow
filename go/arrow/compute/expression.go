@@ -407,7 +407,12 @@ func (c *Call) IsBound() bool {
 		return false
 	}
 
-	return c.bound != 0
+	for _, arg := range c.args {
+		if !arg.IsBound() {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Call) Equals(other Expression) bool {
