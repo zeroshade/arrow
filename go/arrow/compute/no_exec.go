@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// +build !ccalloc,!ccexec
+
 // this file is used to provide dummy implementations for exec
 // functions that are called elsewhere in the compute package by
 // the expression handlers so that the logic can stay where it should
@@ -24,14 +26,11 @@ package compute
 
 import (
 	"context"
-
 	"github.com/apache/arrow/go/v7/arrow"
 	"github.com/apache/arrow/go/v7/arrow/memory"
 )
 
 // dummy function which always returns false when not loading the C++ lib
-func isFuncScalar(funcName string) bool {
-	return false
 }
 
 type boundRef uintptr
