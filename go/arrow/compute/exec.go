@@ -136,6 +136,15 @@ func bindExprSchema(ctx context.Context, mem memory.Allocator, expr Expression, 
 
 func ExecuteScalarExpression(ctx context.Context, expr Expression, mem memory.Allocator, schema *arrow.Schema, input Datum) (Datum, error) {
 	if !expr.IsBound() || expr.boundExpr() == 0 {
+		if lit, ok := expr.(*Literal); ok {
+			// literals are always considered bound, we just need to do the binding
+			// if the caller didn't.
+			b, _, _, err := bindExprSchema(ctx, mem, expr, schema)
+			if err != nil {
+				return nil, err
+			}
+			lit.bound = b
+		}
 		return nil, errors.New("must pass a bound expression to execute")
 	}
 

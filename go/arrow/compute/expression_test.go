@@ -163,6 +163,11 @@ func TestIsScalarExpression(t *testing.T) {
 
 	assert.False(t, compute.NewLiteral(arr).IsScalarExpr())
 	assert.True(t, compute.NewFieldRef("a").IsScalarExpr())
+	assert.True(t, compute.Equal(compute.NewFieldRef("a"), compute.NewLiteral(1)).IsScalarExpr())
+	assert.False(t, compute.Equal(compute.NewFieldRef("a"), compute.NewLiteral(arr)).IsScalarExpr())
+	assert.True(t, compute.NewCall("is_in", []compute.Expression{compute.NewFieldRef("a")}, &compute.SetLookupOptions{compute.NewDatum(arr), true}).IsScalarExpr())
+
+	assert.False(t, compute.NewCall("take", []compute.Expression{compute.NewFieldRef("a"), compute.NewLiteral(arr)}, nil).IsScalarExpr())
 }
 
 func TestExpressionIsSatisfiable(t *testing.T) {

@@ -86,6 +86,7 @@ func (c *ComputeTestSuite) TestScalarExecute() {
 
 	expr, err := compute.NewFieldRef("a").Bind(context.TODO(), c.mem, rb.Schema())
 	c.NoError(err)
+	defer expr.Release()
 
 	input := compute.NewDatum(rb)
 	defer input.Release()
@@ -107,6 +108,7 @@ func (c *ComputeTestSuite) TestScalarCallFunc() {
 	expr, err := compute.NewCall("add", []compute.Expression{compute.NewFieldRef("a"), compute.NewLiteral(3.5)}, nil).
 		Bind(context.TODO(), c.mem, rb.Schema())
 	c.NoError(err)
+	defer expr.Release()
 
 	input := compute.NewDatum(rb)
 	defer input.Release()
@@ -135,8 +137,9 @@ func (c *ComputeTestSuite) TestProjectCallExpr() {
 	defer compute.ReleaseExecContext(ctx)
 	expr, err := compute.Project([]compute.Expression{compute.NewFieldRef("a"), compute.NewFieldRef("b")}, []string{"a", "b"}).
 		Bind(ctx, c.mem, rb.Schema())
-
 	c.NoError(err)
+	defer expr.Release()
+
 	input := compute.NewDatum(rb)
 	defer input.Release()
 
@@ -160,6 +163,7 @@ func (c *ComputeTestSuite) TestProjectAddExpr() {
 	expr, err := compute.Project([]compute.Expression{compute.NewCall("add", []compute.Expression{compute.NewFieldRef("a"), compute.NewLiteral(3.5)}, nil)}, []string{"a + 3.5"}).
 		Bind(context.TODO(), c.mem, rb.Schema())
 	c.NoError(err)
+	defer expr.Release()
 
 	input := compute.NewDatum(rb)
 	defer input.Release()
@@ -207,6 +211,7 @@ func (c *ComputeTestSuite) TestStrptimeCallExpr() {
 	expr, err := compute.NewCall("strptime", []compute.Expression{compute.NewFieldRef("a")}, &compute.StrptimeOptions{Format: "%m/%d/%Y", Unit: arrow.Millisecond}).
 		Bind(context.TODO(), c.mem, fullSchema)
 	c.NoError(err)
+	defer expr.Release()
 
 	out, err := compute.ExecuteScalarExpression(context.Background(), expr, c.mem, fullSchema, input)
 	c.NoError(err)
