@@ -89,14 +89,14 @@ func (b boundRef) gettype() (arrow.DataType, error) {
 	return field.Type, nil
 }
 
-func bindExprSchema(ctx context.Context, mem memory.Allocator, expr Expression, schema *arrow.Schema) (boundRef, ValueDescr, int, error) {
+func bindExprSchema(ctx context.Context, mem memory.Allocator, expr Expression, schema *arrow.Schema) (boundRef, ValueDescr, int, Expression, error) {
 	ec, _ := ctx.Value(execCtxKey{}).(C.ExecContext)
 	// if there's no context, it'll be 0 and we'll just use null in the c++
 	// and get the default context there.
 
 	buf, err := SerializeExpr(expr, mem)
 	if err != nil {
-		return 0, ValueDescr{}, 0, err
+		return 0, ValueDescr{}, 0, nil, err
 	}
 	defer buf.Release()
 
@@ -105,9 +105,9 @@ func bindExprSchema(ctx context.Context, mem memory.Allocator, expr Expression, 
 	defer C.free(unsafe.Pointer(cschema))
 
 	postbind := C.arrow_compute_bind_expr(ec, cschema, (*C.uint8_t)(unsafe.Pointer(&buf.Bytes()[0])), C.int(buf.Len()))
-	if postbind.bound == 0 {
+	if postbind.status != nil {
 		status := C.GoString(postbind.status)
-		return 0, ValueDescr{}, 0, errors.New(status)
+		return 0, ValueDescr{}, 0, nil, errors.New(status)
 	}
 
 	b := boundRef(postbind.bound)
@@ -117,7 +117,7 @@ func bindExprSchema(ctx context.Context, mem memory.Allocator, expr Expression, 
 		field, err := cdata.ImportCArrowField(cdata.SchemaFromPtr(uintptr(unsafe.Pointer(postbind._type))))
 		if err != nil {
 			b.release()
-			return 0, ValueDescr{}, 0, err
+			return 0, ValueDescr{}, 0, nil, err
 		}
 
 		descr.Type = field.Type
@@ -131,7 +131,21 @@ func bindExprSchema(ctx context.Context, mem memory.Allocator, expr Expression, 
 		}
 	}
 
-	return b, descr, int(postbind.index), nil
+	var newExpr Expression
+	if postbind.serialized_data != nil {
+		var serializedExprBytes []byte
+		s := (*reflect.SliceHeader)(unsafe.Pointer(&serializedExprBytes))
+		s.Data = uintptr(unsafe.Pointer(postbind.serialized_data))
+		s.Len, s.Cap = int(postbind.serialized_len), int(postbind.serialized_len)
+		if newExpr, err = DeserializeExpr(mem, memory.NewBufferBytes(serializedExprBytes)); err != nil {
+			return 0, ValueDescr{}, 0, newExpr, err
+		}
+
+		newExpr.(*Call).descr = descr
+		newExpr.(*Call).bound = b
+	}
+
+	return b, descr, int(postbind.index), newExpr, nil
 }
 
 func ExecuteScalarExpression(ctx context.Context, expr Expression, mem memory.Allocator, schema *arrow.Schema, input Datum) (Datum, error) {
@@ -139,7 +153,7 @@ func ExecuteScalarExpression(ctx context.Context, expr Expression, mem memory.Al
 		if lit, ok := expr.(*Literal); ok {
 			// literals are always considered bound, we just need to do the binding
 			// if the caller didn't.
-			b, _, _, err := bindExprSchema(ctx, mem, expr, schema)
+			b, _, _, _, err := bindExprSchema(ctx, mem, expr, schema)
 			if err != nil {
 				return nil, err
 			}

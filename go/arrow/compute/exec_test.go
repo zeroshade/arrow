@@ -258,3 +258,144 @@ func (c *ComputeTestSuite) TestCallFunction() {
 func TestCompute(t *testing.T) {
 	suite.Run(t, new(ComputeTestSuite))
 }
+
+var boringSchema = arrow.NewSchema([]arrow.Field{
+	{Name: "bool", Type: arrow.FixedWidthTypes.Boolean, Nullable: true},
+	{Name: "i8", Type: arrow.PrimitiveTypes.Int8, Nullable: true},
+	{Name: "i32", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+	{Name: "i32_req", Type: arrow.PrimitiveTypes.Int8, Nullable: false},
+	{Name: "u32", Type: arrow.PrimitiveTypes.Uint32, Nullable: true},
+	{Name: "i64", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+	{Name: "f32", Type: arrow.PrimitiveTypes.Float32, Nullable: true},
+	{Name: "f32_req", Type: arrow.PrimitiveTypes.Float32, Nullable: false},
+	{Name: "f64", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+	{Name: "date64", Type: arrow.PrimitiveTypes.Date64, Nullable: true},
+	{Name: "str", Type: arrow.BinaryTypes.String, Nullable: true},
+	{Name: "ts_ns", Type: arrow.FixedWidthTypes.Timestamp_ns, Nullable: true},
+}, nil)
+
+type BindTestSuite struct {
+	suite.Suite
+
+	ctx   context.Context
+	alloc *memory.CgoArrowAllocator
+	mem   *memory.CheckedAllocator
+}
+
+func (b *BindTestSuite) SetupSuite() {
+	b.ctx = compute.WithExecCtx(context.Background())
+	b.alloc = memory.NewCgoArrowAllocator()
+	b.mem = memory.NewCheckedAllocator(b.alloc)
+}
+
+func (b *BindTestSuite) TearDownSuite() {
+	compute.ReleaseExecContext(b.ctx)
+}
+
+func (b *BindTestSuite) SetupTest() {
+
+}
+
+func (b *BindTestSuite) TearDownTest() {
+	runtime.GC()
+	b.mem.AssertSize(b.T(), 0)
+	b.alloc.AssertSize(b.T(), 0)
+}
+
+func (b *BindTestSuite) expectBindsTo(expr, expected compute.Expression, boundOut *compute.Expression) {
+	if expected == nil {
+		expected = expr
+	}
+
+	bound, err := expr.Bind(b.ctx, b.mem, boringSchema)
+	b.NoError(err)
+	b.True(bound.IsBound())
+
+	expected, err = expected.Bind(b.ctx, b.mem, boringSchema)
+	b.NoError(err)
+	b.Truef(bound.Equals(expected), " unbound: %s, expected: %s", expr, expected)
+	defer expected.Release()
+
+	if boundOut != nil {
+		*boundOut = bound
+	} else {
+		bound.Release()
+	}
+}
+
+func (b *BindTestSuite) TestBindLiteral() {
+	bldr := array.NewInt32Builder(b.mem)
+	defer bldr.Release()
+	bldr.AppendValues([]int32{1, 2, 3}, nil)
+	arr := bldr.NewInt32Array()
+	defer arr.Release()
+
+	for _, dat := range []compute.Datum{compute.NewDatum(3), compute.NewDatum(3.5), compute.NewDatum(arr)} {
+		defer dat.Release()
+
+		expr := &compute.Literal{Literal: dat}
+		b.Equal(expr.Descr(), dat.(compute.ArrayLikeDatum).Descr())
+		b.True(expr.IsBound())
+	}
+}
+
+func (b *BindTestSuite) TestBindFieldRef() {
+	expr := compute.NewFieldRef("alpha")
+	b.Equal(expr.Descr(), compute.ValueDescr{})
+	b.False(expr.IsBound())
+
+	b.expectBindsTo(compute.NewFieldRef("i32"), nil, &expr)
+	defer expr.Release()
+	b.Equal(expr.Descr(), compute.ValueDescr{Shape: compute.ShapeArray, Type: arrow.PrimitiveTypes.Int32})
+
+	// if field is not found, returns an error
+	_, err := compute.NewFieldRef("no such field").Bind(b.ctx, b.mem, boringSchema)
+	b.Error(err)
+
+	// referencing nested fields is not supported yet
+	_, err = compute.NewRef(compute.FieldRefList("a", "b")).Bind(b.ctx, b.mem, arrow.NewSchema([]arrow.Field{
+		{Name: "a", Type: arrow.StructOf(arrow.Field{Name: "b", Type: arrow.PrimitiveTypes.Int32})},
+	}, nil))
+	b.Error(err)
+}
+
+func (b *BindTestSuite) TestBindCall() {
+	expr := compute.NewCall("add", []compute.Expression{compute.NewFieldRef("i32"), compute.NewFieldRef("i32_req")}, nil)
+	b.False(expr.IsBound())
+
+	b.expectBindsTo(expr, nil, &expr)
+	defer expr.Release()
+	b.Equal(expr.Descr(), compute.ValueDescr{Shape: compute.ShapeArray, Type: arrow.PrimitiveTypes.Int32})
+
+	b.expectBindsTo(compute.NewCall("add", []compute.Expression{compute.NewFieldRef("f32"), compute.NewLiteral(3)}, nil),
+		compute.NewCall("add", []compute.Expression{compute.NewFieldRef("f32"), compute.NewLiteral(float32(3.0))}, nil), nil)
+
+	b.expectBindsTo(compute.NewCall("add", []compute.Expression{compute.NewFieldRef("i32"), compute.NewLiteral(float32(3.5))}, nil),
+		compute.NewCall("add", []compute.Expression{compute.Cast(compute.NewFieldRef("i32"), arrow.PrimitiveTypes.Float32), compute.NewLiteral(float32(3.5))}, nil), nil)
+}
+
+func (b *BindTestSuite) TestBindNestedCall() {
+	expr := compute.NewCall("add", []compute.Expression{compute.NewFieldRef("a"),
+		compute.NewCall("subtract", []compute.Expression{
+			compute.NewCall("multiply", []compute.Expression{compute.NewFieldRef("b"), compute.NewFieldRef("c")}, nil),
+			compute.NewFieldRef("d"),
+		}, nil)}, nil)
+
+	b.False(expr.IsBound())
+	var err error
+	expr, err = expr.Bind(b.ctx, b.mem, arrow.NewSchema([]arrow.Field{
+		{Name: "a", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+		{Name: "b", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+		{Name: "c", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+		{Name: "d", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+	}, nil))
+	b.NoError(err)
+	defer expr.Release()
+
+	b.Equal(compute.ValueDescr{compute.ShapeArray, arrow.PrimitiveTypes.Int32}, expr.Descr())
+	b.True(expr.IsBound())
+}
+
+func TestBind(t *testing.T) {
+	suite.Run(t, new(BindTestSuite))
+}

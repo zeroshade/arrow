@@ -29,6 +29,7 @@
 #include "arrow/compute/registry.h"
 #include "arrow/record_batch.h"
 #include "arrow/table.h"
+#include <iostream>
 
 const int64_t kDefaultExecChunk = arrow::compute::kDefaultExecChunksize;
 const int arrow_shape_any = static_cast<int>(arrow::ValueDescr::ANY);
@@ -66,13 +67,14 @@ void arrow_compute_set_exec_chunksize(ExecContext ctx, int64_t chunksize) {
 struct bound_expr_holder {
   arrow::Status last_status;
   arrow::compute::Expression expr;
+  std::shared_ptr<arrow::Buffer> serialized;
 };
 
 arrow_postbind_info arrow_compute_bind_expr(ExecContext ctx, struct ArrowSchema* schema,
                                             const uint8_t* serialized_expr,
                                             const int serialized_len) {
-  arrow_postbind_info ret{0, nullptr, -1, nullptr, -1};
-  auto output = std::make_shared<bound_expr_holder>();
+  arrow_postbind_info ret{0, nullptr, 0, nullptr, -1, nullptr, -1};
+  auto output = std::make_shared<bound_expr_holder>();  
   ret.bound = create_ref(output);
 
   arrow::compute::ExecContext* ectx = nullptr;
@@ -84,21 +86,21 @@ arrow_postbind_info arrow_compute_bind_expr(ExecContext ctx, struct ArrowSchema*
   auto expr = arrow::compute::Deserialize(
       std::make_shared<arrow::Buffer>(serialized_expr, serialized_len));
   if (!expr.ok()) {
-    output->last_status = std::move(expr.status());
+    output->last_status = expr.status();
     ret.status = output->last_status.message().c_str();
     return ret;
   }
 
   auto schema_res = arrow::ImportSchema(schema);
   if (!schema_res.ok()) {
-    output->last_status = std::move(expr.status());
+    output->last_status = schema_res.status();
     ret.status = output->last_status.message().c_str();
     return ret;
   }
 
   auto expr_result = expr.ValueUnsafe().Bind(*schema_res.ValueUnsafe(), ectx);
   if (!expr_result.ok()) {
-    output->last_status = std::move(expr.status());
+    output->last_status = expr_result.status();
     ret.status = output->last_status.message().c_str();
     return ret;
   }
@@ -106,7 +108,7 @@ arrow_postbind_info arrow_compute_bind_expr(ExecContext ctx, struct ArrowSchema*
   output->expr = std::move(expr_result.MoveValueUnsafe());
   ret.shape = static_cast<int>(output->expr.descr().shape);
   if (output->expr.literal() == nullptr) {
-    ret.type = (struct ArrowSchema*)(malloc(sizeof(struct ArrowSchema)));
+    ret.type = (struct ArrowSchema*)(malloc(sizeof(struct ArrowSchema)));    
     output->last_status = arrow::ExportType(*(output->expr.type()), ret.type);
     if (!output->last_status.ok()) {
       ret.status = output->last_status.message().c_str();
@@ -115,6 +117,19 @@ arrow_postbind_info arrow_compute_bind_expr(ExecContext ctx, struct ArrowSchema*
 
   if (auto* param = output->expr.parameter()) {
     ret.index = param->index;
+  }
+
+  if (auto* call = output->expr.call()) {
+    auto serialize_result = arrow::compute::Serialize(output->expr);
+    if (!serialize_result.ok()) {
+      output->last_status = serialize_result.status();
+      ret.status = output->last_status.message().c_str();
+      return ret;
+    }
+
+    output->serialized = std::move(serialize_result.MoveValueUnsafe());
+    ret.serialized_data = output->serialized->data();
+    ret.serialized_len = output->serialized->size();
   }
 
   return ret;

@@ -51,6 +51,9 @@ typedef uintptr_t BoundExpression;
 struct arrow_postbind_info {
   // reference to the bound expression
   BoundExpression bound;
+  // serialized new expression (simplification may have happened)
+  const uint8_t* serialized_data;
+  int64_t serialized_len;
   // if not null, contains the error message from binding attempt
   const char* status;
   // shape matching one of the enum values of arrow_shape_any, array or scalar
