@@ -162,7 +162,7 @@ func (l *Literal) Hash() uint64 {
 }
 
 func (l *Literal) Bind(ctx context.Context, mem memory.Allocator, schema *arrow.Schema) (Expression, error) {
-	bound, _, _, err := bindExprSchema(ctx, mem, l, schema)
+	bound, _, _, _, err := bindExprSchema(ctx, mem, l, schema)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +219,7 @@ func (p *Parameter) Equals(other Expression) bool {
 }
 
 func (p *Parameter) Bind(ctx context.Context, mem memory.Allocator, schema *arrow.Schema) (Expression, error) {
-	bound, descr, index, err := bindExprSchema(ctx, mem, p, schema)
+	bound, descr, index, _, err := bindExprSchema(ctx, mem, p, schema)
 	if err != nil {
 		return nil, err
 	}
