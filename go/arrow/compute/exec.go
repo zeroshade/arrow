@@ -14,6 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build ccalloc || ccexec
 // +build ccalloc ccexec
 
 package compute
@@ -30,11 +31,11 @@ import (
 	"reflect"
 	"unsafe"
 
-	"github.com/apache/arrow/go/arrow"
-	"github.com/apache/arrow/go/arrow/array"
-	"github.com/apache/arrow/go/arrow/cdata"
-	"github.com/apache/arrow/go/arrow/memory"
-	"github.com/apache/arrow/go/arrow/scalar"
+	"github.com/apache/arrow/go/v7/arrow"
+	"github.com/apache/arrow/go/v7/arrow/array"
+	"github.com/apache/arrow/go/v7/arrow/cdata"
+	"github.com/apache/arrow/go/v7/arrow/memory"
+	"github.com/apache/arrow/go/v7/arrow/scalar"
 )
 
 func isFuncScalar(funcName string) bool {
