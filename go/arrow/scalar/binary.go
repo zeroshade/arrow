@@ -18,9 +18,11 @@ package scalar
 
 import (
 	"bytes"
+	"errors"
 	"unicode/utf8"
 
 	"github.com/apache/arrow/go/v7/arrow"
+	"github.com/apache/arrow/go/v7/arrow/array"
 	"github.com/apache/arrow/go/v7/arrow/memory"
 	"golang.org/x/xerrors"
 )
@@ -85,6 +87,20 @@ func (b *Binary) ValidateFull() error {
 	return b.Validate()
 }
 
+func (b *Binary) AddToBuilder(bld array.Builder) error {
+	typedBuilder, ok := bld.(*array.BinaryBuilder)
+	if !ok {
+		return errors.New("cannot add binary scalar to non-binary builder")
+	}
+
+	if !b.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(b.Value.Bytes())
+	}
+	return nil
+}
+
 func NewBinaryScalar(val *memory.Buffer, typ arrow.DataType) *Binary {
 	return &Binary{scalar{typ, true}, val}
 }
@@ -122,6 +138,20 @@ func (s *String) CastTo(to arrow.DataType) (Scalar, error) {
 	return ParseScalar(to, string(s.Value.Bytes()))
 }
 
+func (b *String) AddToBuilder(bld array.Builder) error {
+	typedBuilder, ok := bld.(*array.StringBuilder)
+	if !ok {
+		return errors.New("cannot add binary scalar to non-binary builder")
+	}
+
+	if !b.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(b.String())
+	}
+	return nil
+}
+
 func NewStringScalar(val string) *String {
 	buf := memory.NewBufferBytes([]byte(val))
 	defer buf.Release()
@@ -152,6 +182,20 @@ func (b *FixedSizeBinary) Validate() (err error) {
 }
 
 func (b *FixedSizeBinary) ValidateFull() error { return b.Validate() }
+
+func (b *FixedSizeBinary) AddToBuilder(bld array.Builder) error {
+	typedBuilder, ok := bld.(*array.FixedSizeBinaryBuilder)
+	if !ok {
+		return errors.New("cannot add binary scalar to non-binary builder")
+	}
+
+	if !b.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(b.Value.Bytes())
+	}
+	return nil
+}
 
 func NewFixedSizeBinaryScalar(val *memory.Buffer, typ arrow.DataType) *FixedSizeBinary {
 	val.Retain()

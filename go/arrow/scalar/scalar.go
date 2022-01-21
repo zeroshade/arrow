@@ -18,6 +18,7 @@ package scalar
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/maphash"
 	"math"
@@ -61,6 +62,8 @@ type Scalar interface {
 	value() interface{}
 	equals(Scalar) bool
 	//TODO(zeroshade): approxEquals
+
+	AddToBuilder(array.Builder) error
 }
 
 type Releasable interface {
@@ -134,6 +137,16 @@ func (n *Null) Validate() (err error) {
 }
 
 func (n *Null) ValidateFull() error { return n.Validate() }
+
+func (n *Null) AddToBuilder(bld array.Builder) error {
+	typedBuilder, ok := bld.(*array.NullBuilder)
+	if !ok {
+		return errors.New("cannot add duration scalar to non-duration builder")
+	}
+
+	typedBuilder.AppendNull()
+	return nil
+}
 
 var (
 	ScalarNull *Null = &Null{scalar{Type: arrow.Null, Valid: false}}
@@ -213,6 +226,20 @@ func (s *Boolean) CastTo(dt arrow.DataType) (Scalar, error) {
 	}
 }
 
+func (s *Boolean) AddToBuilder(bld array.Builder) error {
+	typedBuilder, ok := bld.(*array.BooleanBuilder)
+	if !ok {
+		return errors.New("cannot add duration scalar to non-duration builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
+}
+
 func NewBooleanScalar(val bool) *Boolean {
 	return &Boolean{scalar{arrow.FixedWidthTypes.Boolean, true}, val}
 }
@@ -257,6 +284,20 @@ func (s *Float16) String() string {
 		return "..."
 	}
 	return string(val.(*String).Value.Bytes())
+}
+
+func (s *Float16) AddToBuilder(bld array.Builder) error {
+	typedBuilder, ok := bld.(*array.Float16Builder)
+	if !ok {
+		return errors.New("cannot add duration scalar to non-duration builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
 }
 
 func NewFloat16ScalarFromFloat32(val float32) *Float16 {
@@ -305,6 +346,20 @@ func (s *Decimal128) CastTo(to arrow.DataType) (Scalar, error) {
 	}
 
 	return nil, xerrors.Errorf("cannot cast non-nil decimal128 scalar to type %s", to)
+}
+
+func (s *Decimal128) AddToBuilder(bld array.Builder) error {
+	typedBuilder, ok := bld.(*array.Decimal128Builder)
+	if !ok {
+		return errors.New("cannot add duration scalar to non-duration builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
 }
 
 func NewDecimal128Scalar(val decimal128.Num, typ arrow.DataType) *Decimal128 {
@@ -377,6 +432,20 @@ func (s *Extension) String() string {
 		return "..."
 	}
 	return string(val.(*String).Value.Bytes())
+}
+
+func (s *Extension) AddToBuilder(bld array.Builder) error {
+	typedBuilder, ok := bld.(*array.ExtensionBuilder)
+	if !ok {
+		return errors.New("cannot add duration scalar to non-duration builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		s.Value.AddToBuilder(typedBuilder.StorageBuilder())
+	}
+	return nil
 }
 
 func NewExtensionScalar(storage Scalar, typ arrow.DataType) *Extension {

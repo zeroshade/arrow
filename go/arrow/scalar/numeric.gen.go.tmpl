@@ -45,6 +45,20 @@ func (s *{{.Name}}) String() string {
 	return string(val.(*String).Value.Bytes())
 }
 
+func (s *{{.Name}}) AddToBuilder(b array.Builder) error {
+    typedBuilder, ok := b.(*array.{{.Name}}Builder)
+    if !ok {
+        return errors.New("cannot add {{.Name}} scalar to non-{{.Name}} builder")
+    }
+
+    if !s.Valid {
+        typedBuilder.AppendNull()
+    } else {
+        typedBuilder.Append(s.Value)
+    }
+    return nil
+}
+
 func (s *{{.Name}}) CastTo(dt arrow.DataType) (Scalar, error) {
     if !s.Valid {
         return MakeNullScalar(dt), nil
@@ -88,6 +102,12 @@ var numericMap = map[arrow.Type]struct{
 }{
 {{range .In -}}
     arrow.{{.Name|upper}}: {scalarFunc: reflect.ValueOf(New{{.Name}}Scalar), valueType: reflect.TypeOf({{.Type}}(0)) },
+{{end}}
+}
+
+var reflectPrimitiveTypeMap = map[reflect.Kind]arrow.DataType{
+{{range .In -}}
+    reflect.{{.Name}}: arrow.PrimitiveTypes.{{.Name}},
 {{end}}
 }
 

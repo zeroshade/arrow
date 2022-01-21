@@ -29,6 +29,7 @@ import (
 
 	"github.com/apache/arrow/go/v7/arrow"
 	"github.com/apache/arrow/go/v7/arrow/array"
+	"github.com/apache/arrow/go/v7/arrow/scalar"
 )
 
 var (
@@ -76,6 +77,14 @@ func getChildren(arr arrow.Array) (ret []arrow.Array) {
 //
 // A fieldpath can also be used to retrieve a child arrow.Array or column from a record batch.
 type FieldPath []int
+
+func (f FieldPath) ToDotPath() string {
+	var v strings.Builder
+	for _, i := range f {
+		fmt.Fprintf(&v, "[%d]", i)
+	}
+	return v.String()
+}
 
 func (f FieldPath) String() string {
 	if len(f) == 0 {
@@ -198,6 +207,10 @@ func (n nameRef) String() string {
 	return "Name(" + string(n) + ")"
 }
 
+func (n nameRef) ToDotPath() string {
+	return string(n)
+}
+
 func (ref nameRef) findAll(fields []arrow.Field) []FieldPath {
 	out := []FieldPath{}
 	for i, f := range fields {
@@ -228,6 +241,14 @@ func (m *matches) add(prefix, suffix FieldPath, fields []arrow.Field) {
 // refList represents a list of references to use to determine which nested
 // field is being referenced. allowing combinations of field indices and names
 type refList []FieldRef
+
+func (r refList) ToDotPath() string {
+	var b strings.Builder
+	for _, child := range r {
+		b.WriteString(child.ToDotPath())
+	}
+	return b.String()
+}
 
 func (r refList) String() string {
 	var b strings.Builder
@@ -270,6 +291,7 @@ func (ref refList) findAll(fields []arrow.Field) []FieldPath {
 
 type refImpl interface {
 	fmt.Stringer
+	ToDotPath() string
 	findAll(fields []arrow.Field) []FieldPath
 	hash(h *maphash.Hash)
 }
@@ -601,3 +623,13 @@ func (f FieldRef) GetOneColumnOrNone(root arrow.Record) (arrow.Array, error) {
 func (f FieldRef) String() string {
 	return "FieldRef." + f.impl.String()
 }
+
+func (f FieldRef) ToDotPath() string {
+	return f.impl.ToDotPath()
+}
+
+func (f FieldRef) ToScalar() (scalar.Scalar, error) {
+	return scalar.MakeScalar(f.ToDotPath()), nil
+}
+
+func (FieldRef) ScalarType() arrow.DataType { return arrow.BinaryTypes.String }

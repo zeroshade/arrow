@@ -31,6 +31,10 @@ import (
 	"golang.org/x/xerrors"
 )
 
+type ScalarType interface {
+	ScalarType() arrow.DataType
+}
+
 type TypeToScalar interface {
 	ToScalar() (Scalar, error)
 }
@@ -46,6 +50,7 @@ type hasTypename interface {
 var (
 	hasTypenameType = reflect.TypeOf((*hasTypename)(nil)).Elem()
 	dataTypeType    = reflect.TypeOf((*arrow.DataType)(nil)).Elem()
+	scalarTypeType  = reflect.TypeOf((*ScalarType)(nil)).Elem()
 )
 
 func FromScalar(sc *Struct, val interface{}) error {
@@ -119,6 +124,52 @@ func setFromScalar(s Scalar, v reflect.Value) error {
 	return nil
 }
 
+func getScalarType(v reflect.Type) arrow.DataType {
+	if v.Implements(scalarTypeType) {
+		m, _ := v.MethodByName("ScalarType")
+		out := m.Func.Call([]reflect.Value{reflect.New(v).Elem()})
+		return out[0].Interface().(arrow.DataType)
+	}
+
+	switch v.Kind() {
+	case reflect.Struct:
+		fields := make([]arrow.Field, 0, v.NumField())
+		for i := 0; i < v.NumField(); i++ {
+			fld := v.Field(i)
+			tag := fld.Tag.Get("compute")
+			if tag == "-" {
+				continue
+			}
+
+			fields = append(fields, arrow.Field{Name: tag, Type: getScalarType(fld.Type)})
+		}
+		return arrow.StructOf(fields...)
+	case reflect.Slice, reflect.Array:
+		return arrow.ListOf(getScalarType(v.Elem()))
+	case reflect.Int:
+		switch bits.UintSize {
+		case 32:
+			return reflectPrimitiveTypeMap[reflect.Int32]
+		default:
+			return reflectPrimitiveTypeMap[reflect.Int64]
+		}
+	case reflect.Uint:
+		switch bits.UintSize {
+		case 32:
+			return reflectPrimitiveTypeMap[reflect.Uint32]
+		default:
+			return reflectPrimitiveTypeMap[reflect.Uint64]
+		}
+	case reflect.Ptr:
+		return getScalarType(v.Elem())
+	default:
+		if t, ok := reflectPrimitiveTypeMap[v.Kind()]; ok {
+			return t
+		}
+	}
+	panic(fmt.Errorf("type not found: %s", v))
+}
+
 func ToScalar(val interface{}, mem memory.Allocator) (Scalar, error) {
 	switch v := val.(type) {
 	case arrow.DataType:
@@ -153,7 +204,6 @@ func ToScalar(val interface{}, mem memory.Allocator) (Scalar, error) {
 			scalars = append(scalars, NewBinaryScalar(memory.NewBufferBytes([]byte(t.TypeName())), arrow.BinaryTypes.Binary))
 			fields = append(fields, "_type_name")
 		}
-
 		return NewStructScalarWithNames(scalars, fields)
 	case reflect.Slice:
 		return createListScalar(v, mem)
@@ -252,6 +302,22 @@ func createListScalar(sliceval reflect.Value, mem memory.Allocator) (Scalar, err
 			bldr.Append(uint64(v))
 		}
 		arr = bldr.NewArray()
+	case reflect.Struct:
+		st := getScalarType(sliceval.Type().Elem()).(*arrow.StructType)
+		bldr := array.NewBuilder(mem, st)
+		defer bldr.Release()
+
+		for i := 0; i < sliceval.Len(); i++ {
+			val, err := ToScalar(sliceval.Index(i).Interface(), mem)
+			if err != nil {
+				return nil, err
+			}
+			if err := val.AddToBuilder(bldr); err != nil {
+				return nil, err
+			}
+		}
+		arr = bldr.NewArray()
+
 	case reflect.Ptr:
 		meta, ok := sliceval.Interface().([]*arrow.Metadata)
 		if !ok {
@@ -488,6 +554,13 @@ func MakeScalar(val interface{}) Scalar {
 	case arrow.DataType:
 		return MakeNullScalar(v)
 	default:
+		if st, ok := v.(ScalarType); ok {
+			dt := st.ScalarType()
+			if nm, ok := numericMap[dt.ID()]; ok {
+				testval := reflect.ValueOf(v)
+				return nm.scalarFunc.Call([]reflect.Value{testval.Convert(nm.valueType)})[0].Interface().(Scalar)
+			}
+		}
 		testval := reflect.ValueOf(v)
 		if testval.Type().ConvertibleTo(reflect.TypeOf(uint32(0))) {
 			return NewUint32Scalar(uint32(testval.Convert(reflect.TypeOf(uint32(0))).Uint()))

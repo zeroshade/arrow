@@ -19,11 +19,13 @@
 package scalar
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"unsafe"
 
 	"github.com/apache/arrow/go/v7/arrow"
+	"github.com/apache/arrow/go/v7/arrow/array"
 	"golang.org/x/xerrors"
 )
 
@@ -53,6 +55,20 @@ func (s *Int8) String() string {
 		return "..."
 	}
 	return string(val.(*String).Value.Bytes())
+}
+
+func (s *Int8) AddToBuilder(b array.Builder) error {
+	typedBuilder, ok := b.(*array.Int8Builder)
+	if !ok {
+		return errors.New("cannot add Int8 scalar to non-Int8 builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
 }
 
 func (s *Int8) CastTo(dt arrow.DataType) (Scalar, error) {
@@ -119,6 +135,20 @@ func (s *Int16) String() string {
 	return string(val.(*String).Value.Bytes())
 }
 
+func (s *Int16) AddToBuilder(b array.Builder) error {
+	typedBuilder, ok := b.(*array.Int16Builder)
+	if !ok {
+		return errors.New("cannot add Int16 scalar to non-Int16 builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
+}
+
 func (s *Int16) CastTo(dt arrow.DataType) (Scalar, error) {
 	if !s.Valid {
 		return MakeNullScalar(dt), nil
@@ -181,6 +211,20 @@ func (s *Int32) String() string {
 		return "..."
 	}
 	return string(val.(*String).Value.Bytes())
+}
+
+func (s *Int32) AddToBuilder(b array.Builder) error {
+	typedBuilder, ok := b.(*array.Int32Builder)
+	if !ok {
+		return errors.New("cannot add Int32 scalar to non-Int32 builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
 }
 
 func (s *Int32) CastTo(dt arrow.DataType) (Scalar, error) {
@@ -247,6 +291,20 @@ func (s *Int64) String() string {
 	return string(val.(*String).Value.Bytes())
 }
 
+func (s *Int64) AddToBuilder(b array.Builder) error {
+	typedBuilder, ok := b.(*array.Int64Builder)
+	if !ok {
+		return errors.New("cannot add Int64 scalar to non-Int64 builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
+}
+
 func (s *Int64) CastTo(dt arrow.DataType) (Scalar, error) {
 	if !s.Valid {
 		return MakeNullScalar(dt), nil
@@ -309,6 +367,20 @@ func (s *Uint8) String() string {
 		return "..."
 	}
 	return string(val.(*String).Value.Bytes())
+}
+
+func (s *Uint8) AddToBuilder(b array.Builder) error {
+	typedBuilder, ok := b.(*array.Uint8Builder)
+	if !ok {
+		return errors.New("cannot add Uint8 scalar to non-Uint8 builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
 }
 
 func (s *Uint8) CastTo(dt arrow.DataType) (Scalar, error) {
@@ -375,6 +447,20 @@ func (s *Uint16) String() string {
 	return string(val.(*String).Value.Bytes())
 }
 
+func (s *Uint16) AddToBuilder(b array.Builder) error {
+	typedBuilder, ok := b.(*array.Uint16Builder)
+	if !ok {
+		return errors.New("cannot add Uint16 scalar to non-Uint16 builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
+}
+
 func (s *Uint16) CastTo(dt arrow.DataType) (Scalar, error) {
 	if !s.Valid {
 		return MakeNullScalar(dt), nil
@@ -437,6 +523,20 @@ func (s *Uint32) String() string {
 		return "..."
 	}
 	return string(val.(*String).Value.Bytes())
+}
+
+func (s *Uint32) AddToBuilder(b array.Builder) error {
+	typedBuilder, ok := b.(*array.Uint32Builder)
+	if !ok {
+		return errors.New("cannot add Uint32 scalar to non-Uint32 builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
 }
 
 func (s *Uint32) CastTo(dt arrow.DataType) (Scalar, error) {
@@ -503,6 +603,20 @@ func (s *Uint64) String() string {
 	return string(val.(*String).Value.Bytes())
 }
 
+func (s *Uint64) AddToBuilder(b array.Builder) error {
+	typedBuilder, ok := b.(*array.Uint64Builder)
+	if !ok {
+		return errors.New("cannot add Uint64 scalar to non-Uint64 builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
+}
+
 func (s *Uint64) CastTo(dt arrow.DataType) (Scalar, error) {
 	if !s.Valid {
 		return MakeNullScalar(dt), nil
@@ -565,6 +679,20 @@ func (s *Float32) String() string {
 		return "..."
 	}
 	return string(val.(*String).Value.Bytes())
+}
+
+func (s *Float32) AddToBuilder(b array.Builder) error {
+	typedBuilder, ok := b.(*array.Float32Builder)
+	if !ok {
+		return errors.New("cannot add Float32 scalar to non-Float32 builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
 }
 
 func (s *Float32) CastTo(dt arrow.DataType) (Scalar, error) {
@@ -631,6 +759,20 @@ func (s *Float64) String() string {
 	return string(val.(*String).Value.Bytes())
 }
 
+func (s *Float64) AddToBuilder(b array.Builder) error {
+	typedBuilder, ok := b.(*array.Float64Builder)
+	if !ok {
+		return errors.New("cannot add Float64 scalar to non-Float64 builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
+}
+
 func (s *Float64) CastTo(dt arrow.DataType) (Scalar, error) {
 	if !s.Valid {
 		return MakeNullScalar(dt), nil
@@ -681,6 +823,19 @@ var numericMap = map[arrow.Type]struct {
 	arrow.UINT64:  {scalarFunc: reflect.ValueOf(NewUint64Scalar), valueType: reflect.TypeOf(uint64(0))},
 	arrow.FLOAT32: {scalarFunc: reflect.ValueOf(NewFloat32Scalar), valueType: reflect.TypeOf(float32(0))},
 	arrow.FLOAT64: {scalarFunc: reflect.ValueOf(NewFloat64Scalar), valueType: reflect.TypeOf(float64(0))},
+}
+
+var reflectPrimitiveTypeMap = map[reflect.Kind]arrow.DataType{
+	reflect.Int8:    arrow.PrimitiveTypes.Int8,
+	reflect.Int16:   arrow.PrimitiveTypes.Int16,
+	reflect.Int32:   arrow.PrimitiveTypes.Int32,
+	reflect.Int64:   arrow.PrimitiveTypes.Int64,
+	reflect.Uint8:   arrow.PrimitiveTypes.Uint8,
+	reflect.Uint16:  arrow.PrimitiveTypes.Uint16,
+	reflect.Uint32:  arrow.PrimitiveTypes.Uint32,
+	reflect.Uint64:  arrow.PrimitiveTypes.Uint64,
+	reflect.Float32: arrow.PrimitiveTypes.Float32,
+	reflect.Float64: arrow.PrimitiveTypes.Float64,
 }
 
 var (

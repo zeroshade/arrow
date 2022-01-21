@@ -463,6 +463,12 @@ type FunctionOptionsEqual interface {
 	Equals(FunctionOptions) bool
 }
 
+type TakeOptions struct {
+	BoundsCheck bool `compute:"boundscheck"`
+}
+
+func (TakeOptions) TypeName() string { return "TakeOptions" }
+
 type MakeStructOptions struct {
 	FieldNames       []string          `compute:"field_names"`
 	FieldNullability []bool            `compute:"field_nullability"`
@@ -502,6 +508,40 @@ type ArithmeticOptions struct {
 }
 
 func (ArithmeticOptions) TypeName() string { return "ArithmeticOptions" }
+
+type SortOrder int8
+
+const (
+	Ascending SortOrder = iota
+	Descending
+)
+
+func (SortOrder) ScalarType() arrow.DataType {
+	return arrow.PrimitiveTypes.Int32
+}
+
+type NullPlacement int8
+
+const (
+	AtStart NullPlacement = iota
+	AtEnd
+)
+
+func (NullPlacement) ScalarType() arrow.DataType {
+	return arrow.PrimitiveTypes.Int32
+}
+
+type SortKey struct {
+	Target FieldRef  `compute:"name"`
+	Order  SortOrder `compute:"order"`
+}
+
+type SortOptions struct {
+	SortKeys      []SortKey     `compute:"sort_keys"`
+	NullPlacement NullPlacement `compute:"null_placement"`
+}
+
+func (SortOptions) TypeName() string { return "SortOptions" }
 
 type CastOptions struct {
 	ToType               arrow.DataType `compute:"to_type"`

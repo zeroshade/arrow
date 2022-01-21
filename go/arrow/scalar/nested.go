@@ -18,6 +18,7 @@ package scalar
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 
 	"github.com/apache/arrow/go/v7/arrow"
@@ -111,7 +112,11 @@ func (l *List) String() string {
 	return string(val.(*String).Value.Bytes())
 }
 
-func NewListScalar(val arrow.Array) *List {
+func (s *List) AddToBuilder(bld array.Builder) error {
+	return errors.New("list add to builder not yet implemented")
+}
+
+func NewListScalar(val array.Interface) *List {
 	return &List{scalar{arrow.ListOf(val.DataType()), true}, array.MakeFromData(val.Data())}
 }
 
@@ -305,6 +310,25 @@ func (s *Struct) ValidateFull() (err error) {
 		}
 	}
 	return
+}
+
+func (s *Struct) AddToBuilder(bld array.Builder) error {
+	typedBuilder, ok := bld.(*array.StructBuilder)
+	if !ok {
+		return errors.New("cannot add duration scalar to non-duration builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(true)
+		for i, v := range s.Value {
+			if err := v.AddToBuilder(typedBuilder.FieldBuilder(i)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func NewStructScalar(val []Scalar, typ arrow.DataType) *Struct {

@@ -17,12 +17,14 @@
 package scalar
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
 	"unsafe"
 
 	"github.com/apache/arrow/go/v7/arrow"
+	"github.com/apache/arrow/go/v7/arrow/array"
 	"golang.org/x/xerrors"
 )
 
@@ -78,6 +80,20 @@ func (s *Duration) Unit() arrow.TimeUnit {
 }
 func (s *Duration) Data() []byte {
 	return (*[arrow.DurationSizeBytes]byte)(unsafe.Pointer(&s.Value))[:]
+}
+
+func (s *Duration) AddToBuilder(bld array.Builder) error {
+	typedBuilder, ok := bld.(*array.DurationBuilder)
+	if !ok {
+		return errors.New("cannot add duration scalar to non-duration builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
 }
 
 func NewDurationScalar(val arrow.Duration, typ arrow.DataType) *Duration {
@@ -199,6 +215,20 @@ func (s *Date32) String() string {
 	return string(val.(*String).Value.Bytes())
 }
 
+func (s *Date32) AddToBuilder(bld array.Builder) error {
+	typedBuilder, ok := bld.(*array.Date32Builder)
+	if !ok {
+		return errors.New("cannot add duration scalar to non-duration builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
+}
+
 func NewDate32Scalar(val arrow.Date32) *Date32 {
 	return &Date32{scalar{arrow.FixedWidthTypes.Date32, true}, val}
 }
@@ -227,6 +257,20 @@ func (s *Date64) String() string {
 		return "..."
 	}
 	return string(val.(*String).Value.Bytes())
+}
+
+func (s *Date64) AddToBuilder(bld array.Builder) error {
+	typedBuilder, ok := bld.(*array.Date64Builder)
+	if !ok {
+		return errors.New("cannot add duration scalar to non-duration builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
 }
 
 func NewDate64Scalar(val arrow.Date64) *Date64 {
@@ -263,6 +307,20 @@ func (s *Time32) Data() []byte {
 	return (*[arrow.Time32SizeBytes]byte)(unsafe.Pointer(&s.Value))[:]
 }
 
+func (s *Time32) AddToBuilder(bld array.Builder) error {
+	typedBuilder, ok := bld.(*array.Time32Builder)
+	if !ok {
+		return errors.New("cannot add duration scalar to non-duration builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
+}
+
 func NewTime32Scalar(val arrow.Time32, typ arrow.DataType) *Time32 {
 	return &Time32{scalar{typ, true}, val}
 }
@@ -296,6 +354,20 @@ func (s *Time64) String() string {
 	return string(val.(*String).Value.Bytes())
 }
 
+func (s *Time64) AddToBuilder(bld array.Builder) error {
+	typedBuilder, ok := bld.(*array.Time64Builder)
+	if !ok {
+		return errors.New("cannot add duration scalar to non-duration builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
+}
+
 func NewTime64Scalar(val arrow.Time64, typ arrow.DataType) *Time64 {
 	return &Time64{scalar{typ, true}, val}
 }
@@ -327,6 +399,20 @@ func (s *Timestamp) String() string {
 		return "..."
 	}
 	return string(val.(*String).Value.Bytes())
+}
+
+func (s *Timestamp) AddToBuilder(bld array.Builder) error {
+	typedBuilder, ok := bld.(*array.TimestampBuilder)
+	if !ok {
+		return errors.New("cannot add duration scalar to non-duration builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
 }
 
 func NewTimestampScalar(val arrow.Timestamp, typ arrow.DataType) *Timestamp {
@@ -367,6 +453,20 @@ func (s *MonthInterval) equals(rhs Scalar) bool {
 }
 func (s *MonthInterval) Data() []byte {
 	return (*[arrow.MonthIntervalSizeBytes]byte)(unsafe.Pointer(&s.Value))[:]
+}
+
+func (s *MonthInterval) AddToBuilder(bld array.Builder) error {
+	typedBuilder, ok := bld.(*array.MonthIntervalBuilder)
+	if !ok {
+		return errors.New("cannot add duration scalar to non-duration builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
 }
 
 func NewMonthIntervalScalar(val arrow.MonthInterval) *MonthInterval {
@@ -411,6 +511,20 @@ func (s *DayTimeInterval) equals(rhs Scalar) bool {
 	return s.Value == rhs.(*DayTimeInterval).Value
 }
 
+func (s *DayTimeInterval) AddToBuilder(bld array.Builder) error {
+	typedBuilder, ok := bld.(*array.DayTimeIntervalBuilder)
+	if !ok {
+		return errors.New("cannot add duration scalar to non-duration builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
+}
+
 func NewDayTimeIntervalScalar(val arrow.DayTimeInterval) *DayTimeInterval {
 	return &DayTimeInterval{scalar{arrow.FixedWidthTypes.DayTimeInterval, true}, val}
 }
@@ -451,6 +565,20 @@ func (s *MonthDayNanoInterval) CastTo(to arrow.DataType) (Scalar, error) {
 
 func (s *MonthDayNanoInterval) equals(rhs Scalar) bool {
 	return s.Value == rhs.(*MonthDayNanoInterval).Value
+}
+
+func (s *MonthDayNanoInterval) AddToBuilder(bld array.Builder) error {
+	typedBuilder, ok := bld.(*array.MonthDayNanoIntervalBuilder)
+	if !ok {
+		return errors.New("cannot add duration scalar to non-duration builder")
+	}
+
+	if !s.Valid {
+		typedBuilder.AppendNull()
+	} else {
+		typedBuilder.Append(s.Value)
+	}
+	return nil
 }
 
 func NewMonthDayNanoIntervalScalar(val arrow.MonthDayNanoInterval) *MonthDayNanoInterval {

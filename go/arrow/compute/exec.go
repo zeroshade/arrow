@@ -28,6 +28,7 @@ import "C"
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"unsafe"
 
@@ -378,8 +379,9 @@ func datumToC(datum Datum, mem memory.Allocator) (out *C.struct_ArrowDatum, err 
 		return
 	}
 
-	scptr := (uintptr)(C.malloc(C.sizeof_struct_ArrowSchema))
-	out.schema = (*C.struct_ArrowSchema)(unsafe.Pointer(scptr))
+	scptr := (C.malloc(C.sizeof_struct_ArrowSchema))
+	out.schema = (*C.struct_ArrowSchema)(scptr)
+	fmt.Println(scptr)
 
 	var allocatedArrs []C.struct_ArrowArray
 	s := (*reflect.SliceHeader)(unsafe.Pointer(&allocatedArrs))
@@ -393,7 +395,8 @@ func datumToC(datum Datum, mem memory.Allocator) (out *C.struct_ArrowDatum, err 
 
 	out.data = (**C.struct_ArrowArray)(unsafe.Pointer(&arrPtrs[0]))
 
-	cdata.ExportArrowArray(arrs[0], cdata.ArrayFromPtr(uintptr(unsafe.Pointer(&allocatedArrs[0]))), cdata.SchemaFromPtr(scptr))
+	cdata.ExportArrowArray(arrs[0], cdata.ArrayFromPtr(uintptr(unsafe.Pointer(&allocatedArrs[0]))), cdata.SchemaFromPtr(uintptr(scptr)))
+	fmt.Println(out.schema)
 	arrPtrs[0] = &allocatedArrs[0]
 	defer arrs[0].Release()
 

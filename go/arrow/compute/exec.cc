@@ -27,8 +27,11 @@
 #include "arrow/compute/exec.h"
 #include "arrow/compute/function.h"
 #include "arrow/compute/registry.h"
+#include "arrow/compute/api_vector.h"
 #include "arrow/record_batch.h"
 #include "arrow/table.h"
+#include "arrow/io/api.h"
+#include "arrow/ipc/api.h"
 #include <iostream>
 
 const int64_t kDefaultExecChunk = arrow::compute::kDefaultExecChunksize;
@@ -171,7 +174,7 @@ void arrow_compute_bound_expr_release(BoundExpression bound) {
   release_ref<bound_expr_holder>(bound);
 }
 
-arrow::Result<arrow::Datum> import_datum(struct ArrowDatum* imported) {
+arrow::Result<arrow::Datum> import_datum(struct ArrowDatum* imported) {  
   auto kind = static_cast<arrow::Datum::Kind>(imported->datum_type);
   if (kind == arrow::Datum::NONE) {
     return arrow::Datum{};
@@ -204,13 +207,18 @@ arrow::Result<arrow::Datum> import_datum(struct ArrowDatum* imported) {
       return arrow::Datum{std::move(arr)};
     }
     case arrow::Datum::TABLE: {
+      std::cout << "IMPORT TABLE" << std::endl;
       std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
+      std::cout << "IMPORT SCHEMA " << imported->schema << std::endl;
+
       ARROW_ASSIGN_OR_RAISE(auto schema, arrow::ImportSchema(imported->schema));
+      std::cout << schema->ToString() << std::endl;
       for (int i = 0; i < imported->num_data; ++i) {
         ARROW_ASSIGN_OR_RAISE(auto batch,
                               arrow::ImportRecordBatch(imported->data[i], schema));
         batches.emplace_back(std::move(batch));
       }
+      std::cout << "IMPORTED BATCHES" << std::endl;
       ARROW_ASSIGN_OR_RAISE(auto tbl, arrow::Table::FromRecordBatches(schema, batches));
       return arrow::Datum{std::move(tbl)};
     }
@@ -222,7 +230,7 @@ arrow::Result<arrow::Datum> import_datum(struct ArrowDatum* imported) {
 }
 
 arrow::Result<struct ArrowDatum*> export_datum(const arrow::Datum& datum) {
-  arrow::ArrayVector arraylist;
+  arrow::ArrayVector arraylist;  
 
   switch (datum.kind()) {
     case arrow::Datum::NONE:
@@ -242,22 +250,25 @@ arrow::Result<struct ArrowDatum*> export_datum(const arrow::Datum& datum) {
       break;
     }
     case arrow::Datum::TABLE: {
-      arrow::TableBatchReader rdr(*datum.table());
+      auto tbl = datum.table();      
+      arrow::TableBatchReader rdr(*tbl);
       std::shared_ptr<arrow::RecordBatch> batch;
       while (true) {
-        RETURN_NOT_OK(rdr.ReadNext(&batch));
+        RETURN_NOT_OK(rdr.ReadNext(&batch));        
         if (!batch) {
           break;
-        }
+        }        
 
-        ARROW_ASSIGN_OR_RAISE(auto struct_arr, datum.record_batch()->ToStructArray());
+        ARROW_ASSIGN_OR_RAISE(auto struct_arr, batch->ToStructArray());
         arraylist.push_back(std::dynamic_pointer_cast<arrow::Array>(struct_arr));
       }
       break;
     }
     case arrow::Datum::COLLECTION:
       throw std::runtime_error("not implemented");
-  }
+  }    
+
+  std::cout << arraylist.size() << std::endl;
 
   struct ArrowDatum* output = (struct ArrowDatum*)(malloc(sizeof(struct ArrowDatum)));
   output->datum_type = static_cast<int>(datum.kind());
@@ -265,10 +276,10 @@ arrow::Result<struct ArrowDatum*> export_datum(const arrow::Datum& datum) {
 
   if (output->num_data == 0) {
     return output;
-  }
+  }  
 
   output->schema = (struct ArrowSchema*)(malloc(sizeof(struct ArrowSchema)));
-  RETURN_NOT_OK(arrow::ExportType(*arraylist[0]->type(), output->schema));
+  RETURN_NOT_OK(arrow::ExportType(*arraylist[0]->type(), output->schema));  
 
   auto arrowoutput =
       (struct ArrowArray*)(malloc(sizeof(struct ArrowArray) * arraylist.size()));
@@ -278,7 +289,7 @@ arrow::Result<struct ArrowDatum*> export_datum(const arrow::Datum& datum) {
   for (size_t i = 0; i < arraylist.size(); ++i) {
     output->data[i] = &arrowoutput[i];
     RETURN_NOT_OK(arrow::ExportArray(*arraylist[i], output->data[i]));
-  }
+  }  
 
   return output;
 }
@@ -337,7 +348,11 @@ struct ArrowDatum* arrow_compute_call_function(
 
   std::vector<arrow::Datum> datum_args;
   for (int i = 0; i < num_args; ++i) {
-    datum_args.emplace_back(std::move(import_datum(args[i]).ValueOrDie()));
+    auto imported = import_datum(args[i]);
+    if (!imported.ok()) {
+      std::cerr << imported.status().message() << std::endl;
+    }
+    datum_args.emplace_back(std::move(imported.ValueOrDie()));
   }
 
   std::unique_ptr<arrow::compute::FunctionOptions> options;
@@ -347,5 +362,9 @@ struct ArrowDatum* arrow_compute_call_function(
                   .ValueOrDie();
   }
   auto output = arrow::compute::CallFunction(func_name, datum_args, options.get(), ectx);
-  return export_datum(output.ValueOrDie()).ValueOrDie();
+  if (!output.ok()) {
+    std::cerr << output.status().message() << std::endl;
+  }
+  auto datum = output.ValueOrDie();   
+  return export_datum(datum).ValueOrDie();
 }
