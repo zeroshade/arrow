@@ -165,6 +165,7 @@ type DataType interface {
 	// Name is name of the data type.
 	Name() string
 	Fingerprint() string
+	Layout() DataTypeLayout
 }
 
 // FixedWidthDataType is the representation of an Arrow type that
@@ -209,3 +210,31 @@ func timeUnitFingerprint(unit TimeUnit) rune {
 		return rune(0)
 	}
 }
+
+type BufferKind int8
+
+const (
+	KindFixedWidth BufferKind = iota
+	KindVarWidth
+	KindBitmap
+	KindAlwaysNull
+)
+
+type BufferSpec struct {
+	Kind      BufferKind
+	ByteWidth int // for KindFixedWidth
+}
+
+func (b BufferSpec) Equals(other BufferSpec) bool {
+	return b.Kind == other.Kind && (b.Kind != KindFixedWidth || b.ByteWidth == other.ByteWidth)
+}
+
+type DataTypeLayout struct {
+	Buffers []BufferSpec
+	HasDict bool
+}
+
+func SpecFixedWidth(w int) BufferSpec { return BufferSpec{KindFixedWidth, w} }
+func SpecVariableWidth() BufferSpec   { return BufferSpec{KindVarWidth, -1} }
+func SpecBitmap() BufferSpec          { return BufferSpec{KindBitmap, -1} }
+func SpecAlwaysNull() BufferSpec      { return BufferSpec{KindAlwaysNull, -1} }

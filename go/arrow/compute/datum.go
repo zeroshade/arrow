@@ -74,6 +74,7 @@ type Datum interface {
 	Len() int64
 	Equals(Datum) bool
 	Release()
+	Type() arrow.DataType
 }
 
 // ArrayLikeDatum is an interface for treating a Datum similarly to an Array,
@@ -99,10 +100,11 @@ type TableLikeDatum interface {
 // EmptyDatum is the null case, a Datum with nothing in it.
 type EmptyDatum struct{}
 
-func (EmptyDatum) String() string  { return "nullptr" }
-func (EmptyDatum) Kind() DatumKind { return KindNone }
-func (EmptyDatum) Len() int64      { return UnknownLength }
-func (EmptyDatum) Release()        {}
+func (EmptyDatum) Type() arrow.DataType { return nil }
+func (EmptyDatum) String() string       { return "nullptr" }
+func (EmptyDatum) Kind() DatumKind      { return KindNone }
+func (EmptyDatum) Len() int64           { return UnknownLength }
+func (EmptyDatum) Release()             {}
 func (EmptyDatum) Equals(other Datum) bool {
 	_, ok := other.(EmptyDatum)
 	return ok
@@ -217,6 +219,7 @@ type RecordDatum struct {
 	Value arrow.Record
 }
 
+func (RecordDatum) Type() arrow.DataType     { return nil }
 func (RecordDatum) Kind() DatumKind          { return KindRecord }
 func (RecordDatum) String() string           { return "RecordBatch" }
 func (r *RecordDatum) Len() int64            { return r.Value.NumRows() }
@@ -240,6 +243,7 @@ type TableDatum struct {
 	Value arrow.Table
 }
 
+func (TableDatum) Type() arrow.DataType     { return nil }
 func (TableDatum) Kind() DatumKind          { return KindTable }
 func (TableDatum) String() string           { return "Table" }
 func (d *TableDatum) Len() int64            { return d.Value.NumRows() }
@@ -260,8 +264,9 @@ func (d *TableDatum) Equals(other Datum) bool {
 // CollectionDatum is a slice of Datums
 type CollectionDatum []Datum
 
-func (CollectionDatum) Kind() DatumKind { return KindCollection }
-func (c CollectionDatum) Len() int64    { return int64(len(c)) }
+func (CollectionDatum) Type() arrow.DataType { return nil }
+func (CollectionDatum) Kind() DatumKind      { return KindCollection }
+func (c CollectionDatum) Len() int64         { return int64(len(c)) }
 func (c CollectionDatum) String() string {
 	var b strings.Builder
 	b.WriteString("Collection(")
@@ -315,6 +320,9 @@ func NewDatum(value interface{}) Datum {
 	switch v := value.(type) {
 	case Datum:
 		return v
+	case arrow.ArrayData:
+		v.Retain()
+		return &ArrayDatum{v.(*array.Data)}
 	case arrow.Array:
 		v.Data().Retain()
 		return &ArrayDatum{v.Data().(*array.Data)}
@@ -334,6 +342,15 @@ func NewDatum(value interface{}) Datum {
 	default:
 		return &ScalarDatum{scalar.MakeScalar(value)}
 	}
+}
+
+func GetBroadcastShape(args []ValueDescr) ValueShape {
+	for _, a := range args {
+		if a.Shape == ShapeArray {
+			return ShapeArray
+		}
+	}
+	return ShapeScalar
 }
 
 var (
