@@ -45,3 +45,5 @@ require (
 	google.golang.org/grpc v1.44.0
 	google.golang.org/protobuf v1.27.1
 )
+
+replace github.com/goccy/go-json => github.com/zeroshade/go-json v0.9.8-0.20220505161227-865b21589003

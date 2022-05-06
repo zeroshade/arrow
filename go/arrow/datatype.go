@@ -238,3 +238,37 @@ func SpecFixedWidth(w int) BufferSpec { return BufferSpec{KindFixedWidth, w} }
 func SpecVariableWidth() BufferSpec   { return BufferSpec{KindVarWidth, -1} }
 func SpecBitmap() BufferSpec          { return BufferSpec{KindBitmap, -1} }
 func SpecAlwaysNull() BufferSpec      { return BufferSpec{KindAlwaysNull, -1} }
+
+func IsInteger(t Type) bool {
+	switch t {
+	case UINT8, INT8, UINT16, INT16, UINT32, INT32, UINT64, INT64:
+		return true
+	}
+	return false
+}
+
+func IsPrimitive(t Type) bool {
+	switch t {
+	case BOOL, UINT8, INT8, UINT16, INT16, UINT32, INT32, UINT64, INT64,
+		FLOAT16, FLOAT32, FLOAT64, DATE32, DATE64, TIME32, TIME64, TIMESTAMP,
+		DURATION, INTERVAL_MONTHS, INTERVAL_DAY_TIME, INTERVAL_MONTH_DAY_NANO:
+		return true
+	}
+	return false
+}
+
+func IsBinaryLike(t Type) bool {
+	switch t {
+	case BINARY, STRING:
+		return true
+	}
+	return false
+}
+
+func IsFixedSizeBinary(t Type) bool {
+	switch t {
+	case DECIMAL128, DECIMAL256, FIXED_SIZE_BINARY:
+		return true
+	}
+	return false
+}

@@ -57,6 +57,8 @@ type Scalar interface {
 	// should take semantics into account and modify the value accordingly.
 	CastTo(arrow.DataType) (Scalar, error)
 
+	SetValid(v bool)
+
 	// internal only functions for delegation
 	value() interface{}
 	equals(Scalar) bool
@@ -103,6 +105,8 @@ func (s *scalar) Validate() error {
 func (s *scalar) ValidateFull() error {
 	return s.Validate()
 }
+
+func (s *scalar) SetValid(v bool) { s.Valid = v }
 
 func (s scalar) DataType() arrow.DataType { return s.Type }
 
@@ -273,6 +277,10 @@ type Decimal128 struct {
 }
 
 func (s *Decimal128) value() interface{} { return s.Value }
+
+func (s *Decimal128) Data() []byte {
+	return (*[arrow.Decimal128SizeBytes]byte)(unsafe.Pointer(&s.Value))[:]
+}
 
 func (s *Decimal128) String() string {
 	if !s.Valid {

@@ -422,3 +422,75 @@ func CopyBitmap(src []byte, srcOffset, length int, dst []byte, dstOffset int) {
 	dst[nbytes-1] &= ^trailMask
 	dst[nbytes-1] |= lastData & trailMask
 }
+
+type bitop struct {
+	word func(uint64, uint64) uint64
+	byt  func(byte, byte) byte
+}
+
+var (
+	andOp bitop
+	orOp  bitop
+)
+
+func init() {
+	andOp = bitop{
+		word: func(u1, u2 uint64) uint64 { return u1 & u2 },
+		byt:  func(b1, b2 byte) byte { return b1 & b2 },
+	}
+	orOp = bitop{
+		word: func(u1, u2 uint64) uint64 { return u1 | u2 },
+		byt:  func(b1, b2 byte) byte { return b1 | b2 },
+	}
+}
+
+func unalignedBitmapOp(op bitop, left []byte, leftOffset int, right []byte, rightOffset int, out []byte, outOffset, length int) {
+	leftRdr := NewBitmapWordReader(left, leftOffset, length)
+	rightRdr := NewBitmapWordReader(right, rightOffset, length)
+	wr := NewBitmapWordWriter(out, outOffset, length)
+
+	nwords := leftRdr.nwords
+	for nwords > 0 {
+		nwords--
+		wr.PutNextWord(op.word(leftRdr.NextWord(), rightRdr.NextWord()))
+	}
+
+	nbytes := leftRdr.TrailingBytes()
+	for nbytes > 0 {
+		nbytes--
+		lb, leftValid := leftRdr.NextTrailingByte()
+		rb, rightValid := rightRdr.NextTrailingByte()
+		debug.Assert(leftValid == rightValid, "valid bits should match")
+		wr.PutNextTrailingByte(op.byt(lb, rb), leftValid)
+	}
+}
+
+func alignedBitmapOp(op bitop, left []byte, leftOffset int, right []byte, rightOffset int, out []byte, outOffset, length int) {
+	debug.Assert((leftOffset%8) == (rightOffset%8), "aligned bitmap op called with unaligned bitmap")
+	debug.Assert((leftOffset%8) == (outOffset%8), "aligned bitmap op called with unalignd bitmap output")
+
+	nbytes := BytesForBits(int64(length + leftOffset%8))
+	left = left[leftOffset/8:]
+	right = right[rightOffset/8:]
+	out = out[outOffset/8:]
+	for i := int64(0); i < nbytes; i++ {
+		out[i] = op.byt(left[i], right[i])
+	}
+}
+
+func bitmapOp(op bitop, left []byte, leftOffset int, right []byte, rightOffset int, out []byte, outOffset, length int) {
+	if (outOffset%8 == leftOffset%8) && (outOffset%8 == rightOffset%8) {
+		// fast case!
+		alignedBitmapOp(op, left, leftOffset, right, rightOffset, out, outOffset, length)
+		return
+	}
+	unalignedBitmapOp(op, left, leftOffset, right, rightOffset, out, outOffset, length)
+}
+
+func BitmapAnd(left []byte, leftOffset int, right []byte, rightOffset int, out []byte, outOffset, length int) {
+	bitmapOp(andOp, left, leftOffset, right, rightOffset, out, outOffset, length)
+}
+
+func BitmapOr(left []byte, leftOffset int, right []byte, rightOffset int, out []byte, outOffset, length int) {
+	bitmapOp(orOp, left, leftOffset, right, rightOffset, out, outOffset, length)
+}

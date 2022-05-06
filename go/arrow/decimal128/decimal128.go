@@ -91,6 +91,69 @@ func FromBigInt(v *big.Int) (n Num) {
 	return
 }
 
+func fromReal(v float64, precPowerOfTen, scalePowerOfTen float64) (Num, bool) {
+	v *= scalePowerOfTen
+	v = math.RoundToEven(v)
+	maxabs := precPowerOfTen
+	if v <= -maxabs || v >= maxabs {
+		return Num{}, false
+	}
+
+	hi := math.Floor(math.Ldexp(v, -64))
+	low := v - math.Ldexp(hi, 64)
+	return Num{hi: int64(hi), lo: uint64(low)}, true
+}
+
+func fromPositiveFloat32(v float32, prec, scale int32) (Num, error) {
+	var pscale float64
+	if scale >= -38 && scale <= 38 {
+		pscale = float64(float32PowersOfTen[scale+38])
+	} else {
+		pscale = math.Pow10(int(scale))
+	}
+	n, ok := fromReal(float64(v), float64(float32PowersOfTen[prec+38]), pscale)
+	if !ok {
+		return n, fmt.Errorf("cannot convert %f to decimal128(precision=%d, scale=%d): overflow", v, prec, scale)
+	}
+	return n, nil
+}
+
+func fromPositiveFloat64(v float64, prec, scale int32) (Num, error) {
+	var pscale float64
+	if scale >= -38 && scale <= 38 {
+		pscale = float64PowersOfTen[scale+38]
+	} else {
+		pscale = math.Pow10(int(scale))
+	}
+	n, ok := fromReal(float64(v), float64(float32PowersOfTen[prec+38]), pscale)
+	if !ok {
+		return n, fmt.Errorf("cannot convert %f to decimal128(precision=%d, scale=%d): overflow", v, prec, scale)
+	}
+	return n, nil
+}
+
+func FromFloat32(v float32, prec, scale int32) (Num, error) {
+	if v < 0 {
+		dec, err := fromPositiveFloat32(v, prec, scale)
+		if err != nil {
+			return dec, err
+		}
+		return dec.negated(), nil
+	}
+	return fromPositiveFloat32(v, prec, scale)
+}
+
+func FromFloat64(v float64, prec, scale int32) (Num, error) {
+	if v < 0 {
+		dec, err := fromPositiveFloat64(v, prec, scale)
+		if err != nil {
+			return dec, err
+		}
+		return dec.negated(), nil
+	}
+	return fromPositiveFloat64(v, prec, scale)
+}
+
 // Negate returns a copy of this Decimal128 value but with the sign negated
 func (n Num) Negate() Num {
 	n.lo = ^n.lo + 1
@@ -244,6 +307,7 @@ func (n Num) BigInt() *big.Int {
 	return toBigIntPositive(n)
 }
 
+
 // Less returns true if the value represented by n is < other
 func (n Num) Less(other Num) bool {
 	return n.hi < other.hi || (n.hi == other.hi && n.lo < other.lo)
@@ -306,6 +370,7 @@ func (n Num) rescaleWouldCauseDataLoss(deltaScale int32, multiplier Num) (out Nu
 	}
 	return
 }
+
 
 // Rescale returns a new decimal128.Num with the value updated assuming
 // the current value is scaled to originalScale with the new value scaled

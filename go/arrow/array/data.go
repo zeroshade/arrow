@@ -77,6 +77,9 @@ func NewDataWithDictionary(dtype arrow.DataType, length int, buffers []*memory.B
 	return data
 }
 
+// SetNullN updates the null count for this Data object
+func (d *Data) SetNullN(n int) { d.nulls = n }
+
 // Reset sets the Data for re-use.
 func (d *Data) Reset(dtype arrow.DataType, length int, buffers []*memory.Buffer, childData []arrow.ArrayData, nulls, offset int) {
 	// Retain new buffers before releasing existing buffers in-case they're the same ones to prevent accidental premature

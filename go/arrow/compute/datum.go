@@ -75,6 +75,7 @@ type Datum interface {
 	Equals(Datum) bool
 	Release()
 	Type() arrow.DataType
+	Data() interface{}
 }
 
 // ArrayLikeDatum is an interface for treating a Datum similarly to an Array,
@@ -88,6 +89,7 @@ type ArrayLikeDatum interface {
 	NullN() int64
 	Type() arrow.DataType
 	Chunks() []arrow.Array
+	Data() interface{}
 }
 
 // TableLikeDatum is an interface type for specifying either a RecordBatch or a
@@ -109,6 +111,7 @@ func (EmptyDatum) Equals(other Datum) bool {
 	_, ok := other.(EmptyDatum)
 	return ok
 }
+func (EmptyDatum) Data() interface{} { return nil }
 
 // ScalarDatum contains a scalar value
 type ScalarDatum struct {
@@ -125,7 +128,9 @@ func (d *ScalarDatum) Descr() ValueDescr    { return ValueDescr{ShapeScalar, d.V
 func (d *ScalarDatum) ToScalar() (scalar.Scalar, error) {
 	return d.Value, nil
 }
-
+func (d *ScalarDatum) Data() interface{} {
+	return d.Value
+}
 func (d *ScalarDatum) NullN() int64 {
 	if d.Value.IsValid() {
 		return 0
@@ -172,6 +177,9 @@ func (d *ArrayDatum) Release() {
 	d.Value.Release()
 	d.Value = nil
 }
+func (d *ArrayDatum) Data() interface{} {
+	return d.Value
+}
 
 func (d *ArrayDatum) Equals(other Datum) bool {
 	rhs, ok := other.(*ArrayDatum)
@@ -200,7 +208,9 @@ func (d *ChunkedDatum) NullN() int64          { return int64(d.Value.NullN()) }
 func (d *ChunkedDatum) Descr() ValueDescr     { return ValueDescr{ShapeArray, d.Value.DataType()} }
 func (d *ChunkedDatum) String() string        { return fmt.Sprintf("Array:{%s}", d.Value.DataType()) }
 func (d *ChunkedDatum) Chunks() []arrow.Array { return d.Value.Chunks() }
-
+func (d *ChunkedDatum) Data() interface{} {
+	return d.Value
+}
 func (d *ChunkedDatum) Release() {
 	d.Value.Release()
 	d.Value = nil
@@ -224,7 +234,7 @@ func (RecordDatum) Kind() DatumKind          { return KindRecord }
 func (RecordDatum) String() string           { return "RecordBatch" }
 func (r *RecordDatum) Len() int64            { return r.Value.NumRows() }
 func (r *RecordDatum) Schema() *arrow.Schema { return r.Value.Schema() }
-
+func (r *RecordDatum) Data() interface{}     { return r.Value }
 func (r *RecordDatum) Release() {
 	r.Value.Release()
 	r.Value = nil
@@ -248,7 +258,7 @@ func (TableDatum) Kind() DatumKind          { return KindTable }
 func (TableDatum) String() string           { return "Table" }
 func (d *TableDatum) Len() int64            { return d.Value.NumRows() }
 func (d *TableDatum) Schema() *arrow.Schema { return d.Value.Schema() }
-
+func (d *TableDatum) Data() interface{}     { return d.Value }
 func (d *TableDatum) Release() {
 	d.Value.Release()
 	d.Value = nil
@@ -278,6 +288,10 @@ func (c CollectionDatum) String() string {
 	}
 	b.WriteByte(')')
 	return b.String()
+}
+
+func (c CollectionDatum) Data() interface{} {
+	return []Datum(c)
 }
 
 func (c CollectionDatum) Release() {
@@ -319,7 +333,7 @@ func (c CollectionDatum) Equals(other Datum) bool {
 func NewDatum(value interface{}) Datum {
 	switch v := value.(type) {
 	case Datum:
-		return v
+		return NewDatum(v.Data())
 	case arrow.ArrayData:
 		v.Retain()
 		return &ArrayDatum{v.(*array.Data)}
@@ -339,6 +353,8 @@ func NewDatum(value interface{}) Datum {
 		return CollectionDatum(v)
 	case scalar.Scalar:
 		return &ScalarDatum{v}
+	case nil:
+		return EmptyDatum{}
 	default:
 		return &ScalarDatum{scalar.MakeScalar(value)}
 	}
