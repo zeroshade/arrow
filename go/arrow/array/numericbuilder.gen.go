@@ -2221,6 +2221,18 @@ func (b *TimestampBuilder) unmarshalOne(dec *json.Decoder) error {
 		}
 
 		b.Append(tm)
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return &json.UnmarshalTypeError{
+				Value:  v.String(),
+				Type:   reflect.TypeOf(arrow.Timestamp(0)),
+				Offset: dec.InputOffset(),
+			}
+		}
+		b.Append(arrow.Timestamp(n))
+	case float64:
+		b.Append(arrow.Timestamp(v))
 
 	default:
 		return &json.UnmarshalTypeError{
@@ -2413,6 +2425,18 @@ func (b *Time32Builder) unmarshalOne(dec *json.Decoder) error {
 		}
 
 		b.Append(tm)
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return &json.UnmarshalTypeError{
+				Value:  v.String(),
+				Type:   reflect.TypeOf(arrow.Time32(0)),
+				Offset: dec.InputOffset(),
+			}
+		}
+		b.Append(arrow.Time32(n))
+	case float64:
+		b.Append(arrow.Time32(v))
 
 	default:
 		return &json.UnmarshalTypeError{
@@ -2605,6 +2629,18 @@ func (b *Time64Builder) unmarshalOne(dec *json.Decoder) error {
 		}
 
 		b.Append(tm)
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return &json.UnmarshalTypeError{
+				Value:  v.String(),
+				Type:   reflect.TypeOf(arrow.Time64(0)),
+				Offset: dec.InputOffset(),
+			}
+		}
+		b.Append(arrow.Time64(n))
+	case float64:
+		b.Append(arrow.Time64(v))
 
 	default:
 		return &json.UnmarshalTypeError{
@@ -2796,6 +2832,18 @@ func (b *Date32Builder) unmarshalOne(dec *json.Decoder) error {
 		}
 
 		b.Append(arrow.Date32FromTime(tm))
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return &json.UnmarshalTypeError{
+				Value:  v.String(),
+				Type:   reflect.TypeOf(arrow.Date32(0)),
+				Offset: dec.InputOffset(),
+			}
+		}
+		b.Append(arrow.Date32(n))
+	case float64:
+		b.Append(arrow.Date32(v))
 
 	default:
 		return &json.UnmarshalTypeError{
@@ -2987,6 +3035,18 @@ func (b *Date64Builder) unmarshalOne(dec *json.Decoder) error {
 		}
 
 		b.Append(arrow.Date64FromTime(tm))
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return &json.UnmarshalTypeError{
+				Value:  v.String(),
+				Type:   reflect.TypeOf(arrow.Date64(0)),
+				Offset: dec.InputOffset(),
+			}
+		}
+		b.Append(arrow.Date64(n))
+	case float64:
+		b.Append(arrow.Date64(v))
 
 	default:
 		return &json.UnmarshalTypeError{
@@ -3168,6 +3228,18 @@ func (b *DurationBuilder) unmarshalOne(dec *json.Decoder) error {
 	switch v := t.(type) {
 	case nil:
 		b.AppendNull()
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return &json.UnmarshalTypeError{
+				Value:  v.String(),
+				Type:   reflect.TypeOf(arrow.Duration(0)),
+				Offset: dec.InputOffset(),
+			}
+		}
+		b.Append(arrow.Duration(n))
+	case float64:
+		b.Append(arrow.Duration(v))
 	case string:
 		// be flexible for specifying durations by accepting forms like
 		// 3h2m0.5s regardless of the unit and converting it to the proper

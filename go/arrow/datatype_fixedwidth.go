@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/xerrors"
@@ -66,15 +67,22 @@ type (
 
 // Date32FromTime returns a Date32 value from a time object
 func Date32FromTime(t time.Time) Date32 {
-	return Date32(t.Unix() / int64((time.Hour * 24).Seconds()))
+	if _, offset := t.Zone(); offset != 0 {
+		t = t.Add(time.Duration(offset) * time.Second).UTC()
+	}
+	return Date32(t.Truncate(24*time.Hour).Unix() / int64((time.Hour * 24).Seconds()))
 }
 
 func (d Date32) ToTime() time.Time {
-	return time.Unix(0, 0).UTC().AddDate(0, 0, int(d))
+	return time.Unix(0, 0).AddDate(0, 0, int(d))
 }
 
 // Date64FromTime returns a Date64 value from a time object
 func Date64FromTime(t time.Time) Date64 {
+	if _, offset := t.Zone(); offset != 0 {
+		t = t.Add(time.Duration(offset) * time.Second).UTC()
+	}
+	t = t.Truncate(24 * time.Hour)
 	return Date64(t.Unix()*1e3 + int64(t.Nanosecond())/1e6)
 }
 
@@ -239,6 +247,11 @@ func (u TimeUnit) Multiplier() time.Duration {
 
 func (u TimeUnit) String() string { return [...]string{"s", "ms", "us", "ns"}[uint(u)&3] }
 
+type TemporalWithUnit interface {
+	FixedWidthDataType
+	TimeUnit() TimeUnit
+}
+
 // TimestampType is encoded as a 64-bit signed integer since the UNIX epoch (2017-01-01T00:00:00Z).
 // The zero-value is a nanosecond and time zone neutral. Time zone neutral can be
 // considered UTC without having "UTC" as a time zone.
@@ -269,6 +282,60 @@ func (TimestampType) Layout() DataTypeLayout {
 	return DataTypeLayout{Buffers: []BufferSpec{SpecBitmap(), SpecFixedWidth(TimestampSizeBytes)}}
 }
 
+func (t *TimestampType) TimeUnit() TimeUnit { return t.Unit }
+
+func (t *TimestampType) GetZone() (*time.Location, error) {
+	// the TimeZone string is allowed to be either a valid tzdata string
+	// such as "America/New_York" or an absolute offset of the form -XX:XX
+	// or +XX:XX.
+	//
+	// As such, we have two methods we can try. First we'll try LoadLocation
+	// and if that fails, we'll try testing for the absolute offset.
+	if t.TimeZone == "" || t.TimeZone == "UTC" || t.TimeZone == "utc" {
+		return time.UTC, nil
+	}
+
+	if loc, err := time.LoadLocation(t.TimeZone); err == nil {
+		return loc, err
+	}
+
+	// at this point, we know that the timezone isn't empty, and didn't match
+	// anything in the tzdatabase. So either it's an absolute offset or
+	// it's invalid. first remove the colon, then use time.Parse
+	noColon := strings.Replace(t.TimeZone, ":", "", -1)
+	timetz, err := time.Parse("-0700", noColon)
+	if err != nil {
+		return nil, fmt.Errorf("could not find timezone location for '%s'", t.TimeZone)
+	}
+
+	_, offset := timetz.Zone()
+	return time.FixedZone(t.TimeZone, offset), nil
+}
+
+func (t *TimestampType) GetToTimeFunc() (func(Timestamp) time.Time, error) {
+	tz, err := t.GetZone()
+	if err != nil {
+		return nil, err
+	}
+
+	switch t.Unit {
+	case Second:
+		return func(v Timestamp) time.Time { return time.Unix(int64(v), 0).In(tz) }, nil
+	case Millisecond:
+		return func(v Timestamp) time.Time {
+			return time.Unix(int64(v)/int64(time.Second/time.Millisecond), (int64(v)%int64(time.Second/time.Millisecond))*int64(time.Millisecond)).In(tz)
+		}, nil
+	case Microsecond:
+		return func(v Timestamp) time.Time {
+			return time.Unix(int64(v)/int64(time.Second/time.Microsecond), (int64(v)%int64(time.Second/time.Microsecond))*int64(time.Microsecond)).In(tz)
+		}, nil
+	case Nanosecond:
+		return func(v Timestamp) time.Time { return time.Unix(0, int64(v)).In(tz) }, nil
+	}
+
+	return nil, fmt.Errorf("invalid timestamp unit type: %s", t.Unit)
+}
+
 // Time32Type is encoded as a 32-bit signed integer, representing either seconds or milliseconds since midnight.
 type Time32Type struct {
 	Unit TimeUnit
@@ -284,6 +351,7 @@ func (t *Time32Type) Fingerprint() string {
 func (Time32Type) Layout() DataTypeLayout {
 	return DataTypeLayout{Buffers: []BufferSpec{SpecBitmap(), SpecFixedWidth(Time32SizeBytes)}}
 }
+func (t *Time32Type) TimeUnit() TimeUnit { return t.Unit }
 
 // Time64Type is encoded as a 64-bit signed integer, representing either microseconds or nanoseconds since midnight.
 type Time64Type struct {
@@ -300,6 +368,7 @@ func (t *Time64Type) Fingerprint() string {
 func (Time64Type) Layout() DataTypeLayout {
 	return DataTypeLayout{Buffers: []BufferSpec{SpecBitmap(), SpecFixedWidth(Time64SizeBytes)}}
 }
+func (t *Time64Type) TimeUnit() TimeUnit { return t.Unit }
 
 // DurationType is encoded as a 64-bit signed integer, representing an amount
 // of elapsed time without any relation to a calendar artifact.
@@ -317,6 +386,7 @@ func (t *DurationType) Fingerprint() string {
 func (DurationType) Layout() DataTypeLayout {
 	return DataTypeLayout{Buffers: []BufferSpec{SpecBitmap(), SpecFixedWidth(DurationSizeBytes)}}
 }
+func (t *DurationType) TimeUnit() TimeUnit { return t.Unit }
 
 // Float16Type represents a floating point value encoded with a 16-bit precision.
 type Float16Type struct{}
@@ -437,49 +507,54 @@ func (MonthDayNanoIntervalType) Layout() DataTypeLayout {
 	return DataTypeLayout{Buffers: []BufferSpec{SpecBitmap(), SpecFixedWidth(MonthDayNanoIntervalSizeBytes)}}
 }
 
-type op int8
+type TimestampConvertOP int8
 
 const (
-	convDIVIDE = iota
-	convMULTIPLY
+	ConvDIVIDE TimestampConvertOP = iota
+	ConvMULTIPLY
 )
 
 var timestampConversion = [...][4]struct {
-	op     op
+	op     TimestampConvertOP
 	factor int64
 }{
 	Nanosecond: {
-		Nanosecond:  {convMULTIPLY, int64(time.Nanosecond)},
-		Microsecond: {convDIVIDE, int64(time.Microsecond)},
-		Millisecond: {convDIVIDE, int64(time.Millisecond)},
-		Second:      {convDIVIDE, int64(time.Second)},
+		Nanosecond:  {ConvMULTIPLY, int64(time.Nanosecond)},
+		Microsecond: {ConvDIVIDE, int64(time.Microsecond)},
+		Millisecond: {ConvDIVIDE, int64(time.Millisecond)},
+		Second:      {ConvDIVIDE, int64(time.Second)},
 	},
 	Microsecond: {
-		Nanosecond:  {convMULTIPLY, int64(time.Microsecond)},
-		Microsecond: {convMULTIPLY, 1},
-		Millisecond: {convDIVIDE, int64(time.Millisecond / time.Microsecond)},
-		Second:      {convDIVIDE, int64(time.Second / time.Microsecond)},
+		Nanosecond:  {ConvMULTIPLY, int64(time.Microsecond)},
+		Microsecond: {ConvMULTIPLY, 1},
+		Millisecond: {ConvDIVIDE, int64(time.Millisecond / time.Microsecond)},
+		Second:      {ConvDIVIDE, int64(time.Second / time.Microsecond)},
 	},
 	Millisecond: {
-		Nanosecond:  {convMULTIPLY, int64(time.Millisecond)},
-		Microsecond: {convMULTIPLY, int64(time.Millisecond / time.Microsecond)},
-		Millisecond: {convMULTIPLY, 1},
-		Second:      {convDIVIDE, int64(time.Second / time.Millisecond)},
+		Nanosecond:  {ConvMULTIPLY, int64(time.Millisecond)},
+		Microsecond: {ConvMULTIPLY, int64(time.Millisecond / time.Microsecond)},
+		Millisecond: {ConvMULTIPLY, 1},
+		Second:      {ConvDIVIDE, int64(time.Second / time.Millisecond)},
 	},
 	Second: {
-		Nanosecond:  {convMULTIPLY, int64(time.Second)},
-		Microsecond: {convMULTIPLY, int64(time.Second / time.Microsecond)},
-		Millisecond: {convMULTIPLY, int64(time.Second / time.Millisecond)},
-		Second:      {convMULTIPLY, 1},
+		Nanosecond:  {ConvMULTIPLY, int64(time.Second)},
+		Microsecond: {ConvMULTIPLY, int64(time.Second / time.Microsecond)},
+		Millisecond: {ConvMULTIPLY, int64(time.Second / time.Millisecond)},
+		Second:      {ConvMULTIPLY, 1},
 	},
+}
+
+func GetTimestampConvert(in, out TimeUnit) (op TimestampConvertOP, factor int64) {
+	c := timestampConversion[int(in)][int(out)]
+	return c.op, c.factor
 }
 
 func ConvertTimestampValue(in, out TimeUnit, value int64) int64 {
 	conv := timestampConversion[int(in)][int(out)]
 	switch conv.op {
-	case convMULTIPLY:
+	case ConvMULTIPLY:
 		return value * conv.factor
-	case convDIVIDE:
+	case ConvDIVIDE:
 		return value / conv.factor
 	}
 

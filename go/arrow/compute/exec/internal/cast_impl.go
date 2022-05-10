@@ -19,8 +19,7 @@ package internal
 import (
 	"errors"
 	"fmt"
-	"math"
-	"math/big"
+	"time"
 	"unsafe"
 
 	"github.com/apache/arrow/go/v8/arrow"
@@ -43,7 +42,7 @@ func reinterpret[T primitive | ~bool | decimal128.Num](b []byte) (res []T) {
 	return unsafe.Slice((*T)(unsafe.Pointer(&b[0])), len(b)/sz)
 }
 
-func getVals[T primitive | ~bool | decimal128.Num](arr arrow.ArrayData, buf int) []T {
+func getVals[T primitive | decimal128.Num](arr arrow.ArrayData, buf int) []T {
 	res := reinterpret[T](arr.Buffers()[buf].Bytes())
 	return res[arr.Offset() : arr.Offset()+arr.Len()]
 }
@@ -182,12 +181,20 @@ func toInteger[T constraints.Integer](allowOverflow bool, min, max, v decimal128
 	return T(v.LowBits())
 }
 
-func castDecimal128ToInteger[T constraints.Integer](ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum, min, max decimal128.Num) error {
-	opts := ctx.State.(*compute.CastOptions)
-	inputType := batch.Values[0].Type().(*arrow.Decimal128Type)
-	inScale := inputType.Scale
-
-	var exec functions.ArrayKernelExec
+func CastDecimal128ToInteger[T constraints.Integer](ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+	var (
+		opts       = ctx.State.(*compute.CastOptions)
+		inputType  = batch.Values[0].Type().(*arrow.Decimal128Type)
+		inScale    = inputType.Scale
+		exec       functions.ArrayKernelExec
+		minLowbits = uint64(MinOf[T]())
+		minHiBits  int64
+		max        = decimal128.FromU64(uint64(MaxOf[T]()))
+	)
+	if MinOf[T]() < 0 {
+		minHiBits = -1
+	}
+	min := decimal128.New(minHiBits, minLowbits)
 	if opts.AllowDecimalTruncate {
 		if inScale < 0 {
 			exec = scalarUnaryNotNullStateful(func(ctx *functions.KernelCtx, val decimal128.Num, err *error) T {
@@ -211,25 +218,6 @@ func castDecimal128ToInteger[T constraints.Integer](ctx *functions.KernelCtx, ba
 		})
 	}
 	return exec(ctx, batch, out)
-}
-
-func CastDecimal128ToIntegerUnsigned[T constraints.Unsigned](ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
-	var (
-		nbits = unsafe.Sizeof(T(0)) << 3
-		min   = decimal128.FromU64(0)
-		max   = decimal128.FromU64(uint64((1 << nbits) - 1))
-	)
-	return castDecimal128ToInteger[T](ctx, batch, out, min, max)
-}
-
-func CastDecimal128ToIntegerSigned[T constraints.Signed](ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
-	var (
-		nbits  = unsafe.Sizeof(T(0)) << 3
-		minVal = -(1 << (nbits - 1))
-		min    = decimal128.FromI64(int64(minVal))
-		max    = decimal128.FromI64(int64(^minVal))
-	)
-	return castDecimal128ToInteger[T](ctx, batch, out, min, max)
 }
 
 func CastIntegerToDecimal128[T constraints.Integer](ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
@@ -311,10 +299,7 @@ func CastDecimalToFloat(ctx *functions.KernelCtx, batch *functions.ExecBatch, ou
 	inScale := inType.Scale
 
 	exec := scalarUnaryNotNullStateful(func(_ *functions.KernelCtx, v decimal128.Num, err *error) float32 {
-		out := (&big.Float{}).SetInt(v.BigInt())
-		out.Quo(out, big.NewFloat(math.Pow10(int(inScale))))
-		res, _ := out.Float32()
-		return res
+		return v.ToFloat32(inScale)
 	})
 	return exec(ctx, batch, out)
 }
@@ -324,24 +309,22 @@ func CastDecimalToDouble(ctx *functions.KernelCtx, batch *functions.ExecBatch, o
 	inScale := inType.Scale
 
 	exec := scalarUnaryNotNullStateful(func(_ *functions.KernelCtx, v decimal128.Num, _ *error) float64 {
-		out := (&big.Float{}).SetInt(v.BigInt())
-		out.Quo(out, big.NewFloat(math.Pow10(int(inScale))))
-		res, _ := out.Float64()
-		return res
+		return v.ToFloat64(inScale)
 	})
 	return exec(ctx, batch, out)
 }
 
 func FloatToDecimal128(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
-	// options := ctx.State.(*compute.CastOptions)
+	options := ctx.State.(*compute.CastOptions)
 	outType := out.Type().(*arrow.Decimal128Type)
 	outScale := outType.Scale
 	outPrec := outType.Precision
 
 	exec := scalarUnaryNotNullStateful(func(_ *functions.KernelCtx, v float32, err *error) decimal128.Num {
 		out, e := decimal128.FromFloat32(v, outPrec, outScale)
-		if e != nil {
+		if !options.AllowDecimalTruncate && e != nil {
 			*err = e
+			return decimal128.Num{}
 		}
 		return out
 	})
@@ -349,18 +332,201 @@ func FloatToDecimal128(ctx *functions.KernelCtx, batch *functions.ExecBatch, out
 }
 
 func DoubleToDecimal128(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
-	// options := ctx.State.(*compute.CastOptions)
+	options := ctx.State.(*compute.CastOptions)
 	outType := out.Type().(*arrow.Decimal128Type)
 	outScale := outType.Scale
 	outPrec := outType.Precision
 
 	exec := scalarUnaryNotNullStateful(func(_ *functions.KernelCtx, v float64, err *error) decimal128.Num {
 		out, e := decimal128.FromFloat64(v, outPrec, outScale)
-		if e != nil {
+		if !options.AllowDecimalTruncate && e != nil {
 			*err = e
+			return decimal128.Num{}
 		}
 		return out
 
 	})
 	return exec(ctx, batch, out)
+}
+
+var (
+	epoch = time.Unix(0, 0)
+)
+
+func TimestampToDate32(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+	inType := batch.Values[0].Type().(*arrow.TimestampType)
+	debug.Assert(out.Type().ID() == arrow.DATE32, "timestamptoDate32 called with type other than Date32 as output")
+
+	fnToTime, err := inType.GetToTimeFunc()
+	if err != nil {
+		return err
+	}
+
+	exec := scalarUnaryNotNullStateful(func(_ *functions.KernelCtx, arg0 arrow.Timestamp, err *error) arrow.Date32 {
+		tm := fnToTime(arg0)
+		return arrow.Date32FromTime(tm)
+	})
+	return exec(ctx, batch, out)
+}
+
+func TimestampToDate64(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+	inType := batch.Values[0].Type().(*arrow.TimestampType)
+	debug.Assert(out.Type().ID() == arrow.DATE64, "timestamptoDate64 called with type other than Date64 as output")
+
+	fnToTime, err := inType.GetToTimeFunc()
+	if err != nil {
+		return err
+	}
+
+	exec := scalarUnaryNotNullStateful(func(_ *functions.KernelCtx, arg0 arrow.Timestamp, err *error) arrow.Date64 {
+		tm := fnToTime(arg0)
+		return arrow.Date64FromTime(tm)
+	})
+	return exec(ctx, batch, out)
+}
+
+func TimestampToTime32(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+	inType := batch.Values[0].Type().(*arrow.TimestampType)
+	outType := out.Type().(*arrow.Time32Type)
+
+	options := ctx.State.(*compute.CastOptions)
+
+	fnToTime, err := inType.GetToTimeFunc()
+	if err != nil {
+		return err
+	}
+	if inType.TimeZone != "" && inType.TimeZone != "UTC" {
+		origFn := fnToTime
+		fnToTime = func(t arrow.Timestamp) time.Time {
+			v := origFn(t)
+			_, offset := v.Zone()
+			return v.Add(time.Duration(offset) * time.Second).UTC()
+		}
+	}
+
+	var fn func(time.Duration, *error) arrow.Time32
+
+	switch outType.Unit {
+	case arrow.Second:
+		fn = func(d time.Duration, _ *error) arrow.Time32 {
+			return arrow.Time32(d.Seconds())
+		}
+	case arrow.Millisecond:
+		fn = func(d time.Duration, _ *error) arrow.Time32 {
+			return arrow.Time32(d.Milliseconds())
+		}
+	default:
+		return fmt.Errorf("%w: bad unit type for cast to time32: %s", compute.ErrInvalid, outType.Unit)
+	}
+
+	op, factor := arrow.GetTimestampConvert(inType.Unit, outType.Unit)
+	if op == arrow.ConvDIVIDE && !options.AllowTimeTruncate {
+		origFn := fn
+		switch inType.Unit {
+		case arrow.Millisecond:
+			fn = func(d time.Duration, err *error) arrow.Time32 {
+				v := origFn(d, err)
+				if int64(v)*factor != d.Milliseconds() {
+					*err = fmt.Errorf("%w: cast would lose data: %d", compute.ErrInvalid, d.Milliseconds())
+				}
+				return v
+			}
+		case arrow.Microsecond:
+			fn = func(d time.Duration, err *error) arrow.Time32 {
+				v := origFn(d, err)
+				if int64(v)*factor != d.Microseconds() {
+					*err = fmt.Errorf("%w: cast would lose data: %d", compute.ErrInvalid, d.Microseconds())
+				}
+				return v
+			}
+		case arrow.Nanosecond:
+			fn = func(d time.Duration, err *error) arrow.Time32 {
+				v := origFn(d, err)
+				if int64(v)*factor != d.Nanoseconds() {
+					*err = fmt.Errorf("%w: cast would lose data: %d", compute.ErrInvalid, d.Nanoseconds())
+				}
+				return v
+			}
+		}
+	}
+
+	exec := scalarUnaryNotNullStateful(func(_ *functions.KernelCtx, arg0 arrow.Timestamp, err *error) arrow.Time32 {
+		t := fnToTime(arg0)
+		dur := t.Sub(t.Truncate(24 * time.Hour))
+		return fn(dur, err)
+	})
+	return exec(ctx, batch, out)
+}
+
+func TimestampToTime64(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+	inType := batch.Values[0].Type().(*arrow.TimestampType)
+	outType := out.Type().(*arrow.Time64Type)
+
+	options := ctx.State.(*compute.CastOptions)
+
+	fnToTime, err := inType.GetToTimeFunc()
+	if err != nil {
+		return err
+	}
+
+	if inType.TimeZone != "" && inType.TimeZone != "UTC" {
+		origFn := fnToTime
+		fnToTime = func(t arrow.Timestamp) time.Time {
+			v := origFn(t)
+			_, offset := v.Zone()
+			return v.Add(time.Duration(offset) * time.Second).UTC()
+		}
+	}
+
+	var fn func(time.Duration, *error) arrow.Time64
+
+	op, _ := arrow.GetTimestampConvert(inType.Unit, outType.Unit)
+	if op == arrow.ConvDIVIDE && !options.AllowTimeTruncate {
+		// only one case can happen here, microseconds. since nanoseconds
+		// wouldn't be a downscale
+		fn = func(d time.Duration, err *error) arrow.Time64 {
+			if d.Nanoseconds() != d.Microseconds()*int64(time.Microsecond) {
+				*err = fmt.Errorf("%w: cast would lose data: %d", compute.ErrInvalid, d.Nanoseconds())
+			}
+			return arrow.Time64(d.Microseconds())
+		}
+	} else {
+		switch outType.Unit {
+		case arrow.Microsecond:
+			fn = func(d time.Duration, _ *error) arrow.Time64 {
+				return arrow.Time64(d.Microseconds())
+			}
+		case arrow.Nanosecond:
+			fn = func(d time.Duration, _ *error) arrow.Time64 {
+				return arrow.Time64(d.Nanoseconds())
+			}
+		default:
+			return fmt.Errorf("%w: bad unit type for cast to time64: %s", compute.ErrInvalid, outType.Unit)
+		}
+	}
+
+	exec := scalarUnaryNotNullStateful(func(_ *functions.KernelCtx, arg0 arrow.Timestamp, err *error) arrow.Time64 {
+		t := fnToTime(arg0)
+		dur := t.Sub(t.Truncate(24 * time.Hour))
+		return fn(dur, err)
+	})
+	return exec(ctx, batch, out)
+}
+
+func SimpleTemporalCast[I, O arrow.Duration | arrow.Time32 | arrow.Time64 | arrow.Timestamp](ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+	debug.Assert(batch.Values[0].Kind() == compute.KindArray, "duration to duration cast expects an array")
+
+	input := batch.Values[0].(*compute.ArrayDatum).Value
+	output := out.(*compute.ArrayDatum).Value
+
+	// if units are the same, zero copy, otherwise convert
+	inType := input.DataType().(arrow.TemporalWithUnit)
+	outType := output.DataType().(arrow.TemporalWithUnit)
+	if inType.TimeUnit() == outType.TimeUnit() && inType.BitWidth() == outType.BitWidth() {
+		output.Reset(output.DataType(), input.Len(), input.Buffers(), input.Children(), input.NullN(), input.Offset())
+		return nil
+	}
+
+	op, factor := arrow.GetTimestampConvert(inType.TimeUnit(), outType.TimeUnit())
+	return ShiftTime[I, O](ctx, op, factor, input, output)
 }

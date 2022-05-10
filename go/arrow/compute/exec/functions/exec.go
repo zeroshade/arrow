@@ -31,6 +31,10 @@ import (
 	"github.com/apache/arrow/go/v8/internal/utils"
 )
 
+var (
+	ErrNotImplemented = errors.New("not yet implemented")
+)
+
 type execBatchIterator struct {
 	args         []compute.Datum
 	chunkIdxes   []int
@@ -460,19 +464,22 @@ func ExecuteFunction(ctx context.Context, fn Function, args []compute.Datum, opt
 	}
 
 	ch := make(chan compute.Datum)
+	done := make(chan bool)
 	output := make([]compute.Datum, 0)
 	go func() {
+		defer close(done)
 		for d := range ch {
 			output = append(output, d)
 		}
 	}()
 
-	if err := executor.execute(args, ch); err != nil {
-		close(ch)
+	err = executor.execute(args, ch)
+	close(ch)
+	if err != nil {
 		return nil, err
 	}
-	close(ch)
 
+	<-done
 	final := executor.wrapResults(args, output)
 	return final, nil
 }

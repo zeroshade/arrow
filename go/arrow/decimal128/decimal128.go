@@ -91,31 +91,24 @@ func FromBigInt(v *big.Int) (n Num) {
 	return
 }
 
-func fromReal(v float64, precPowerOfTen, scalePowerOfTen float64) (Num, bool) {
-	v *= scalePowerOfTen
-	v = math.RoundToEven(v)
-	maxabs := precPowerOfTen
-	if v <= -maxabs || v >= maxabs {
-		return Num{}, false
-	}
-
-	hi := math.Floor(math.Ldexp(v, -64))
-	low := v - math.Ldexp(hi, 64)
-	return Num{hi: int64(hi), lo: uint64(low)}, true
-}
-
 func fromPositiveFloat32(v float32, prec, scale int32) (Num, error) {
-	var pscale float64
+	var pscale float32
 	if scale >= -38 && scale <= 38 {
-		pscale = float64(float32PowersOfTen[scale+38])
+		pscale = float32PowersOfTen[scale+38]
 	} else {
-		pscale = math.Pow10(int(scale))
+		pscale = float32(math.Pow10(int(scale)))
 	}
-	n, ok := fromReal(float64(v), float64(float32PowersOfTen[prec+38]), pscale)
-	if !ok {
-		return n, fmt.Errorf("cannot convert %f to decimal128(precision=%d, scale=%d): overflow", v, prec, scale)
+
+	v *= pscale
+	v = float32(math.RoundToEven(float64(v)))
+	maxabs := float32PowersOfTen[prec+38]
+	if v <= -maxabs || v >= maxabs {
+		return Num{}, fmt.Errorf("cannot convert %f to decimal128(precision=%d, scale=%d): overflow", v, prec, scale)
 	}
-	return n, nil
+
+	hi := float32(math.Floor(math.Ldexp(float64(v), -64)))
+	low := v - float32(math.Ldexp(float64(hi), 64))
+	return Num{hi: int64(hi), lo: uint64(low)}, nil
 }
 
 func fromPositiveFloat64(v float64, prec, scale int32) (Num, error) {
@@ -125,16 +118,22 @@ func fromPositiveFloat64(v float64, prec, scale int32) (Num, error) {
 	} else {
 		pscale = math.Pow10(int(scale))
 	}
-	n, ok := fromReal(float64(v), float64(float32PowersOfTen[prec+38]), pscale)
-	if !ok {
-		return n, fmt.Errorf("cannot convert %f to decimal128(precision=%d, scale=%d): overflow", v, prec, scale)
+
+	v *= pscale
+	v = math.RoundToEven(v)
+	maxabs := float64PowersOfTen[prec+38]
+	if v <= -maxabs || v >= maxabs {
+		return Num{}, fmt.Errorf("cannot convert %f to decimal128(precision=%d, scale=%d): overflow", v, prec, scale)
 	}
-	return n, nil
+
+	hi := math.Floor(math.Ldexp(float64(v), -64))
+	low := v - math.Ldexp(hi, 64)
+	return Num{hi: int64(hi), lo: uint64(low)}, nil
 }
 
 func FromFloat32(v float32, prec, scale int32) (Num, error) {
 	if v < 0 {
-		dec, err := fromPositiveFloat32(v, prec, scale)
+		dec, err := fromPositiveFloat32(-v, prec, scale)
 		if err != nil {
 			return dec, err
 		}
@@ -145,13 +144,51 @@ func FromFloat32(v float32, prec, scale int32) (Num, error) {
 
 func FromFloat64(v float64, prec, scale int32) (Num, error) {
 	if v < 0 {
-		dec, err := fromPositiveFloat64(v, prec, scale)
+		dec, err := fromPositiveFloat64(-v, prec, scale)
 		if err != nil {
 			return dec, err
 		}
 		return dec.negated(), nil
 	}
 	return fromPositiveFloat64(v, prec, scale)
+}
+
+func (n Num) tofloat32Positive(scale int32) float32 {
+	const twoTo64 float32 = 1.8446744e+19
+	x := float32(n.hi) * twoTo64
+	x += float32(n.lo)
+	if scale >= -38 && scale <= 38 {
+		x *= float32PowersOfTen[-scale+38]
+	} else {
+		x *= float32(math.Pow10(-int(scale)))
+	}
+	return x
+}
+
+func (n Num) ToFloat32(scale int32) float32 {
+	if n.hi < 0 {
+		return -n.negated().tofloat32Positive(scale)
+	}
+	return n.tofloat32Positive(scale)
+}
+
+func (n Num) tofloat64Positive(scale int32) float64 {
+	const twoTo64 float64 = 1.8446744073709552e+19
+	x := float64(n.hi) * twoTo64
+	x += float64(n.lo)
+	if scale >= -38 && scale <= 38 {
+		x *= float64PowersOfTen[-scale+38]
+	} else {
+		x *= math.Pow10(-int(scale))
+	}
+	return x
+}
+
+func (n Num) ToFloat64(scale int32) float64 {
+	if n.hi < 0 {
+		return -n.negated().tofloat64Positive(scale)
+	}
+	return n.tofloat64Positive(scale)
 }
 
 // Negate returns a copy of this Decimal128 value but with the sign negated

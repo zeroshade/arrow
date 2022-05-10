@@ -19,7 +19,6 @@ package internal
 import (
 	"errors"
 	"fmt"
-	"unsafe"
 
 	"github.com/apache/arrow/go/v8/arrow"
 	"github.com/apache/arrow/go/v8/arrow/bitutil"
@@ -112,49 +111,32 @@ func IntegersInRange[T constraints.Integer](datum compute.Datum, lowerBound, upp
 	return nil
 }
 
-func getSafeMaxUnsigned[I, O constraints.Unsigned]() I {
-	ibits := unsafe.Sizeof(I(0)) << 3
-	obits := unsafe.Sizeof(O(0)) << 3
-	if ibits > obits {
-		return (1 << obits) - 1
+func getSafeMinSameSign[I, O constraints.Integer]() I {
+	if SizeOf[I]() > SizeOf[O]() {
+		return I(MinOf[O]())
 	}
-	return (1 << ibits) - 1
+	return MinOf[I]()
+}
+
+func getSafeMaxSameSign[I, O constraints.Integer]() I {
+	if SizeOf[I]() > SizeOf[O]() {
+		return I(MaxOf[O]())
+	}
+	return MaxOf[I]()
 }
 
 func getSafeMaxSignedUnsigned[I constraints.Signed, O constraints.Unsigned]() I {
-	ibits := unsafe.Sizeof(I(0)) << 3
-	obits := unsafe.Sizeof(O(0)) << 3
-	if ibits <= obits {
-		return ^-(1 << (ibits - 1))
+	if SizeOf[I]() <= SizeOf[O]() {
+		return MaxOf[I]()
 	}
-	return (1 << obits) - 1
+	return I(MaxOf[O]())
 }
 
 func getSafeMaxUnsignedSigned[I constraints.Unsigned, O constraints.Signed]() I {
-	ibits := unsafe.Sizeof(I(0)) << 3
-	obits := unsafe.Sizeof(O(0)) << 3
-	if ibits < obits {
-		return (1 << ibits) - 1
+	if SizeOf[I]() < SizeOf[O]() {
+		return MaxOf[I]()
 	}
-	return ^-(1 << (obits - 1))
-}
-
-func getSafeMinSigned[I, O constraints.Signed]() I {
-	ibits := unsafe.Sizeof(I(0)) << 3
-	obits := unsafe.Sizeof(O(0)) << 3
-	if ibits > obits {
-		return -(1 << (obits - 1))
-	}
-	return -(1 << (ibits - 1))
-}
-
-func getSafeMaxSigned[I, O constraints.Signed]() I {
-	ibits := unsafe.Sizeof(I(0)) << 3
-	obits := unsafe.Sizeof(O(0)) << 3
-	if ibits > obits {
-		return ^-(1 << (obits - 1))
-	}
-	return ^-(1 << (ibits - 1))
+	return I(MaxOf[O]())
 }
 
 func getSafeMinMaxSigned[T constraints.Signed](target arrow.Type) (min, max T) {
@@ -172,17 +154,17 @@ func getSafeMinMaxSigned[T constraints.Signed](target arrow.Type) (min, max T) {
 		min = 0
 		max = getSafeMaxSignedUnsigned[T, uint64]()
 	case arrow.INT8:
-		min = getSafeMinSigned[T, int8]()
-		max = getSafeMaxSigned[T, int8]()
+		min = getSafeMinSameSign[T, int8]()
+		max = getSafeMaxSameSign[T, int8]()
 	case arrow.INT16:
-		min = getSafeMinSigned[T, int16]()
-		max = getSafeMaxSigned[T, int16]()
+		min = getSafeMinSameSign[T, int16]()
+		max = getSafeMaxSameSign[T, int16]()
 	case arrow.INT32:
-		min = getSafeMinSigned[T, int32]()
-		max = getSafeMaxSigned[T, int32]()
+		min = getSafeMinSameSign[T, int32]()
+		max = getSafeMaxSameSign[T, int32]()
 	case arrow.INT64:
-		min = getSafeMinSigned[T, int64]()
-		max = getSafeMaxSigned[T, int64]()
+		min = getSafeMinSameSign[T, int64]()
+		max = getSafeMaxSameSign[T, int64]()
 	}
 	return
 }
@@ -191,13 +173,13 @@ func getSafeMinMaxUnsigned[T constraints.Unsigned](target arrow.Type) (min, max 
 	min = 0
 	switch target {
 	case arrow.UINT8:
-		max = getSafeMaxUnsigned[T, uint8]()
+		max = getSafeMaxSameSign[T, uint8]()
 	case arrow.UINT16:
-		max = getSafeMaxUnsigned[T, uint16]()
+		max = getSafeMaxSameSign[T, uint16]()
 	case arrow.UINT32:
-		max = getSafeMaxUnsigned[T, uint32]()
+		max = getSafeMaxSameSign[T, uint32]()
 	case arrow.UINT64:
-		max = getSafeMaxUnsigned[T, uint64]()
+		max = getSafeMaxSameSign[T, uint64]()
 	case arrow.INT8:
 		max = getSafeMaxUnsignedSigned[T, int8]()
 	case arrow.INT16:

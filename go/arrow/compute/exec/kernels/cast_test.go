@@ -171,6 +171,31 @@ func (cs *CastTestSuite) checkCastFails(input arrow.Array, options compute.CastO
 	cs.Error(err)
 }
 
+func (cs *CastTestSuite) checkCastZeroCopy(input arrow.Array, toType arrow.DataType, options compute.CastOptions) {
+	ctx := functions.SetExecCtx(context.Background(), &cs.ectx)
+	in := compute.NewDatum(input)
+	defer in.Release()
+
+	options.ToType = toType
+
+	out, err := functions.ExecuteFunction(ctx, cs.castFn, []compute.Datum{in}, &options)
+	cs.NoError(err)
+	defer out.Release()
+
+	result := out.(*compute.ArrayDatum)
+	cs.Len(result.Value.Buffers(), len(input.Data().Buffers()))
+	for i := range input.Data().Buffers() {
+		cs.assertBuffersSame(input.Data(), result.Value, i)
+	}
+}
+
+func (cs *CastTestSuite) checkZeroCopy(from, to arrow.DataType, str string) {
+	arr, _, _ := array.FromJSON(cs.ectx.Mem, from, strings.NewReader(str))
+	defer arr.Release()
+
+	cs.checkCastZeroCopy(arr, to, *compute.DefaultCastOptions(true))
+}
+
 func (cs *CastTestSuite) TestSameTypeZeroCopy() {
 	ctx := functions.SetExecCtx(context.Background(), &cs.ectx)
 	arr, _, err := array.FromJSON(cs.ectx.Mem, arrow.PrimitiveTypes.Int32, strings.NewReader(`[0, null, 2, 3, 4]`))
@@ -601,11 +626,689 @@ func (cs *CastTestSuite) TestFloatingToDecimal128() {
 		cs.check(flt, dt, `[0.0, null, 123.45, 123.456, 999.994]`, `["0.00", null, "123.45", "123.46", "999.99"]`, *compute.DefaultCastOptions(true))
 
 		// overflow
-		// opts := compute.NewCastOptions(dt, true)
-		// cs.checkFail(flt, `[999.996]`, *opts)
+		opts := compute.NewCastOptions(dt, true)
+		cs.checkFail(flt, `[999.996]`, *opts)
 
-		// opts.AllowDecimalTruncate = true
-		// cs.check(flt, dt, `[0.0, null, 999.996, 123.45, 999.994]`, `["0.00", null, "0.00", "123.45", "999.99"]`, *opts)
+		opts.AllowDecimalTruncate = true
+		cs.check(flt, dt, `[0.0, null, 999.996, 123.45, 999.994]`, `["0.00", null, "0.00", "123.45", "999.99"]`, *opts)
+	}
+
+	// 2**64 + 2**41 (exactly representable as a float)
+	cs.check(arrow.PrimitiveTypes.Float32, &arrow.Decimal128Type{Precision: 20, Scale: 0},
+		`[1.8446746e+19, -1.8446746e+19]`, `["18446746272732807168", "-18446746272732807168"]`, *compute.DefaultCastOptions(true))
+
+	cs.check(arrow.PrimitiveTypes.Float64, &arrow.Decimal128Type{Precision: 20, Scale: 0},
+		`[1.8446744073709556e+19, -1.8446744073709556e+19]`, `["18446744073709555712", "-18446744073709555712"]`, *compute.DefaultCastOptions(true))
+
+	cs.check(arrow.PrimitiveTypes.Float32, &arrow.Decimal128Type{Precision: 20, Scale: 4},
+		`[1.8446746e+15, -1.8446746e+15]`, `["1844674627273280.7168", "-1844674627273280.7168"]`, *compute.DefaultCastOptions(true))
+
+	cs.check(arrow.PrimitiveTypes.Float64, &arrow.Decimal128Type{Precision: 20, Scale: 4},
+		`[1.8446744073709556e+15, -1.8446744073709556e+15]`, `["1844674407370955.5712", "-1844674407370955.5712"]`, *compute.DefaultCastOptions(true))
+
+	// other edge cases tested with decimal128.FromFloat*
+}
+
+func (cs *CastTestSuite) TestDecimal128ToFloating() {
+	for _, flt := range []arrow.DataType{arrow.PrimitiveTypes.Float32, arrow.PrimitiveTypes.Float64} {
+		cs.check(&arrow.Decimal128Type{Precision: 5, Scale: 2}, flt,
+			`["0.00", null, "123.45", "999.99"]`, `[0.0, null, 123.45, 999.99]`, *compute.DefaultCastOptions(true))
+	}
+
+	// other edge cases tested with decimal128.ToFloat*
+}
+
+const timestampJSON = `["1970-01-01T00:00:59.123456789","2000-02-29T23:23:23.999999999",
+"1899-01-01T00:59:20.001001001","2033-05-18T03:33:20.000000000",
+"2020-01-01T01:05:05.001", "2019-12-31T02:10:10.002",
+"2019-12-30T03:15:15.003", "2009-12-31T04:20:20.004132",
+"2010-01-01T05:25:25.005321", "2010-01-03T06:30:30.006163",
+"2010-01-04T07:35:35", "2006-01-01T08:40:40", "2005-12-31T09:45:45",
+"2008-12-28", "2008-12-29", "2012-01-01 01:02:03", null]`
+
+const timestampSecondsJSON = `["1970-01-01T00:00:59","2000-02-29T23:23:23",
+"1899-01-01T00:59:20","2033-05-18T03:33:20",
+"2020-01-01T01:05:05", "2019-12-31T02:10:10",
+"2019-12-30T03:15:15", "2009-12-31T04:20:20",
+"2010-01-01T05:25:25", "2010-01-03T06:30:30",
+"2010-01-04T07:35:35", "2006-01-01T08:40:40",
+"2005-12-31T09:45:45", "2008-12-28", "2008-12-29",
+"2012-01-01 01:02:03", null]`
+
+const timestampExremeJSON = `["1677-09-20T00:00:59.123456", "2262-04-13T23:23:23.999999"]`
+
+func (cs *CastTestSuite) TestTimestampToDate() {
+	arr, _, err := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Timestamp_ns, strings.NewReader(timestampJSON))
+	cs.Require().NoError(err)
+	defer arr.Release()
+
+	date32, _, err := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Date32,
+		strings.NewReader(`[0, 11016, -25932, 23148, 18262, 18261, 18260, 14609, 14610, 14612, 14613, 13149, 13148, 14241, 14242, 15340, null]`))
+	cs.Require().NoError(err)
+	defer date32.Release()
+
+	date64, _, err := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Date64,
+		strings.NewReader(`[0, 951782400000, -2240524800000, 1999987200000,
+		1577836800000, 1577750400000, 1577664000000, 1262217600000,
+		1262304000000, 1262476800000, 1262563200000, 1136073600000,
+		1135987200000, 1230422400000, 1230508800000, 1325376000000, null]`))
+	cs.Require().NoError(err)
+	defer date64.Release()
+
+	timestampExtreme, _, err := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Timestamp_us, strings.NewReader(`["1677-09-20T00:00:59.123456", "2262-04-13T23:23:23.999999"]`))
+	cs.Require().NoError(err)
+	defer timestampExtreme.Release()
+
+	date32Extreme, _, _ := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Date32, strings.NewReader(`[-106753, 106753]`))
+	defer date32Extreme.Release()
+
+	date64Extreme, _, _ := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Date64, strings.NewReader(`[-9223459200000, 9223459200000]`))
+	defer date64Extreme.Release()
+
+	cs.checkCast(arr, date32, *compute.NewCastOptions(arrow.FixedWidthTypes.Date32, true))
+	cs.checkCast(arr, date64, *compute.NewCastOptions(arrow.FixedWidthTypes.Date64, true))
+	cs.checkCast(timestampExtreme, date32Extreme, *compute.NewCastOptions(arrow.FixedWidthTypes.Date32, true))
+	cs.checkCast(timestampExtreme, date64Extreme, *compute.NewCastOptions(arrow.FixedWidthTypes.Date64, true))
+
+	for _, u := range []arrow.TimeUnit{arrow.Second, arrow.Millisecond, arrow.Microsecond, arrow.Nanosecond} {
+		cs.Run(u.String(), func() {
+			dt := &arrow.TimestampType{Unit: u}
+			arr, _, err := array.FromJSON(cs.ectx.Mem, dt, strings.NewReader(timestampSecondsJSON))
+			cs.Require().NoError(err)
+			defer arr.Release()
+
+			cs.checkCast(arr, date32, *compute.DefaultCastOptions(true))
+			cs.checkCast(arr, date64, *compute.DefaultCastOptions(true))
+		})
+	}
+}
+
+func (cs *CastTestSuite) TestZonedTimestampToDate() {
+	timestamps, _, err := array.FromJSON(cs.ectx.Mem,
+		&arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: "Pacific/Marquesas"},
+		strings.NewReader(timestampJSON))
+	cs.Require().NoError(err)
+	defer timestamps.Release()
+
+	date32, _, err := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Date32,
+		strings.NewReader(`[
+			-1, 11016, -25933, 23147,
+			18261, 18260, 18259, 14608,
+			14609, 14611, 14612, 13148,
+			13148, 14240, 14241, 15339, null
+		]`))
+	cs.Require().NoError(err)
+	defer date32.Release()
+
+	date64, _, err := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Date64,
+		strings.NewReader(`[
+			-86400000, 951782400000, -2240611200000, 1999900800000,
+			1577750400000, 1577664000000, 1577577600000, 1262131200000,
+			1262217600000, 1262390400000, 1262476800000, 1135987200000,
+			1135987200000, 1230336000000, 1230422400000, 1325289600000, null
+		]`))
+	cs.Require().NoError(err)
+	defer date64.Release()
+
+	cs.checkCast(timestamps, date32, *compute.DefaultCastOptions(true))
+	cs.checkCast(timestamps, date64, *compute.DefaultCastOptions(true))
+
+	date32, _, err = array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Date32,
+		strings.NewReader(`[
+			0, 11017, -25932, 23148,
+			18262, 18261, 18260, 14609,
+			14610, 14612, 14613, 13149,
+			13148, 14241, 14242, 15340, null
+		]`))
+	cs.Require().NoError(err)
+	defer date32.Release()
+
+	date64, _, err = array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Date64,
+		strings.NewReader(`[
+			0, 951868800000, -2240524800000, 1999987200000, 1577836800000,
+			1577750400000, 1577664000000, 1262217600000, 1262304000000,
+			1262476800000, 1262563200000, 1136073600000, 1135987200000,
+			1230422400000, 1230508800000, 1325376000000, null
+		]`))
+	cs.Require().NoError(err)
+	defer date64.Release()
+
+	for _, u := range []arrow.TimeUnit{arrow.Second, arrow.Millisecond, arrow.Microsecond, arrow.Nanosecond} {
+		cs.Run("australia "+u.String(), func() {
+			dt := &arrow.TimestampType{Unit: u, TimeZone: "Australia/Broken_Hill"}
+			arr, _, err := array.FromJSON(cs.ectx.Mem, dt, strings.NewReader(timestampSecondsJSON))
+			cs.Require().NoError(err)
+			defer arr.Release()
+
+			cs.checkCast(arr, date32, *compute.DefaultCastOptions(true))
+			cs.checkCast(arr, date64, *compute.DefaultCastOptions(true))
+		})
+	}
+	for _, u := range []arrow.TimeUnit{arrow.Second, arrow.Millisecond, arrow.Microsecond, arrow.Nanosecond} {
+		cs.Run("invalid timezone "+u.String(), func() {
+			dt := &arrow.TimestampType{Unit: u, TimeZone: "Mars/Mariner_Valley"}
+			arr, _, err := array.FromJSON(cs.ectx.Mem, dt, strings.NewReader(timestampSecondsJSON))
+			cs.Require().NoError(err)
+			defer arr.Release()
+
+			cs.checkCastFails(arr, *compute.NewCastOptions(arrow.FixedWidthTypes.Date32, false))
+			cs.checkCastFails(arr, *compute.NewCastOptions(arrow.FixedWidthTypes.Date64, false))
+		})
+	}
+}
+
+func (cs *CastTestSuite) TestTimestampsToTime() {
+	timestamps, _, _ := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Timestamp_ns, strings.NewReader(timestampJSON))
+	defer timestamps.Release()
+
+	timestampsExtreme, _, _ := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Timestamp_us, strings.NewReader(timestampExremeJSON))
+	defer timestampsExtreme.Release()
+
+	timestampsMicro, _, _ := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Timestamp_us,
+		strings.NewReader(`[
+			"1970-01-01T00:00:59.123456","2000-02-29T23:23:23.999999",
+			"1899-01-01T00:59:20.001001","2033-05-18T03:33:20.000000",
+			"2020-01-01T01:05:05.001", "2019-12-31T02:10:10.002",
+			"2019-12-30T03:15:15.003", "2009-12-31T04:20:20.004132",
+			"2010-01-01T05:25:25.005321", "2010-01-03T06:30:30.006163",
+			"2010-01-04T07:35:35", "2006-01-01T08:40:40", "2005-12-31T09:45:45",
+			"2008-12-28", "2008-12-29", "2012-01-01 01:02:03", null]`))
+	defer timestampsMicro.Release()
+
+	timestampsMilli, _, _ := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Timestamp_ms,
+		strings.NewReader(`[
+			"1970-01-01T00:00:59.123","2000-02-29T23:23:23.999",
+			"1899-01-01T00:59:20.001","2033-05-18T03:33:20.000",
+			"2020-01-01T01:05:05.001", "2019-12-31T02:10:10.002",
+			"2019-12-30T03:15:15.003", "2009-12-31T04:20:20.004",
+			"2010-01-01T05:25:25.005", "2010-01-03T06:30:30.006",
+			"2010-01-04T07:35:35", "2006-01-01T08:40:40", "2005-12-31T09:45:45",
+			"2008-12-28", "2008-12-29", "2012-01-01 01:02:03", null]`))
+	defer timestampsMilli.Release()
+
+	timestampsSecond, _, _ := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Timestamp_s, strings.NewReader(timestampSecondsJSON))
+	defer timestampsSecond.Release()
+
+	times, _, err := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Time64ns,
+		strings.NewReader(`[
+			59123456789, 84203999999999, 3560001001001, 12800000000000,
+			3905001000000, 7810002000000, 11715003000000, 15620004132000,
+			19525005321000, 23430006163000, 27335000000000, 31240000000000,
+			35145000000000, 0, 0, 3723000000000, null
+		]`))
+	cs.Require().NoError(err)
+	defer times.Release()
+
+	timesNanoMicro, _, err := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Time64us,
+		strings.NewReader(`[
+			59123456, 84203999999, 3560001001, 12800000000,
+			3905001000, 7810002000, 11715003000, 15620004132,
+			19525005321, 23430006163, 27335000000, 31240000000,
+			35145000000, 0, 0, 3723000000, null
+		]`))
+	cs.Require().NoError(err)
+	defer timesNanoMicro.Release()
+
+	timesNanoMilli, _, err := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Time32ms,
+		strings.NewReader(`[
+			59123, 84203999, 3560001, 12800000,
+			3905001, 7810002, 11715003, 15620004,
+			19525005, 23430006, 27335000, 31240000,
+			35145000, 0, 0, 3723000, null
+		]`))
+	cs.Require().NoError(err)
+	defer timesNanoMilli.Release()
+
+	timesMicroNano, _, err := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Time64ns,
+		strings.NewReader(`[
+			59123456000, 84203999999000, 3560001001000, 12800000000000,
+			3905001000000, 7810002000000, 11715003000000, 15620004132000,
+			19525005321000, 23430006163000, 27335000000000, 31240000000000,
+			35145000000000, 0, 0, 3723000000000, null
+		]`))
+	cs.Require().NoError(err)
+	defer timesMicroNano.Release()
+
+	timesMilliNano, _, err := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Time64ns,
+		strings.NewReader(`[
+			59123000000, 84203999000000, 3560001000000, 12800000000000,
+			3905001000000, 7810002000000, 11715003000000, 15620004000000,
+			19525005000000, 23430006000000, 27335000000000, 31240000000000,
+			35145000000000, 0, 0, 3723000000000, null
+		]`))
+	cs.Require().NoError(err)
+	defer timesMilliNano.Release()
+
+	timesMilliMicro, _, err := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Time64us,
+		strings.NewReader(`[
+			59123000, 84203999000, 3560001000, 12800000000,
+			3905001000, 7810002000, 11715003000, 15620004000,
+			19525005000, 23430006000, 27335000000, 31240000000,
+			35145000000, 0, 0, 3723000000, null
+		]`))
+	cs.Require().NoError(err)
+	defer timesMilliMicro.Release()
+
+	timesExtreme, _, err := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Time64us, strings.NewReader(`[59123456, 84203999999]`))
+	cs.Require().NoError(err)
+	defer timesExtreme.Release()
+
+	timesSec, _, err := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Time32s,
+		strings.NewReader(`[
+			59, 84203, 3560, 12800,
+			3905, 7810, 11715, 15620,
+			19525, 23430, 27335, 31240,
+			35145, 0, 0, 3723, null
+		]`))
+	cs.Require().NoError(err)
+	defer timesSec.Release()
+
+	timesMilli, _, err := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Time32ms,
+		strings.NewReader(`[
+			59000, 84203000, 3560000, 12800000,
+			3905000, 7810000, 11715000, 15620000,
+			19525000, 23430000, 27335000, 31240000,
+			35145000, 0, 0, 3723000, null
+		]`))
+	cs.Require().NoError(err)
+	defer timesMilli.Release()
+
+	timesMicro, _, err := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Time64us,
+		strings.NewReader(`[
+			59000000, 84203000000, 3560000000, 12800000000,
+			3905000000, 7810000000, 11715000000, 15620000000,
+			19525000000, 23430000000, 27335000000, 31240000000,
+			35145000000, 0, 0, 3723000000, null
+		]`))
+	cs.Require().NoError(err)
+	defer timesMicro.Release()
+
+	timesNano, _, err := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Time64ns,
+		strings.NewReader(`[
+			59000000000, 84203000000000, 3560000000000, 12800000000000,
+			3905000000000, 7810000000000, 11715000000000, 15620000000000,
+			19525000000000, 23430000000000, 27335000000000, 31240000000000,
+			35145000000000, 0, 0, 3723000000000, null
+		]`))
+	cs.Require().NoError(err)
+	defer timesNano.Release()
+
+	cs.checkCast(timestamps, times, *compute.DefaultCastOptions(true))
+	cs.checkCastFails(timestamps, *compute.NewCastOptions(arrow.FixedWidthTypes.Time64us, true))
+	cs.checkCast(timestampsExtreme, timesExtreme, *compute.DefaultCastOptions(true))
+
+	tssec, _, _ := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Timestamp_s, strings.NewReader(timestampSecondsJSON))
+	defer tssec.Release()
+	tsmilli, _, _ := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Timestamp_ms, strings.NewReader(timestampSecondsJSON))
+	defer tsmilli.Release()
+	tsmicro, _, _ := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Timestamp_us, strings.NewReader(timestampSecondsJSON))
+	defer tsmicro.Release()
+	tsnano, _, _ := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Timestamp_ns, strings.NewReader(timestampSecondsJSON))
+	defer tsnano.Release()
+
+	cs.checkCast(tssec, timesSec, *compute.DefaultCastOptions(true))
+	cs.checkCast(tssec, timesMilli, *compute.DefaultCastOptions(true))
+	cs.checkCast(tsmilli, timesSec, *compute.DefaultCastOptions(true))
+	cs.checkCast(tsmilli, timesMilli, *compute.DefaultCastOptions(true))
+	cs.checkCast(tsmicro, timesMicro, *compute.DefaultCastOptions(true))
+	cs.checkCast(tsmicro, timesNano, *compute.DefaultCastOptions(true))
+	cs.checkCast(tsmicro, timesMilli, *compute.DefaultCastOptions(true))
+	cs.checkCast(tsmicro, timesSec, *compute.DefaultCastOptions(true))
+	cs.checkCast(tsnano, timesNano, *compute.DefaultCastOptions(true))
+	cs.checkCast(tsnano, timesMicro, *compute.DefaultCastOptions(true))
+	cs.checkCast(tsnano, timesMilli, *compute.DefaultCastOptions(true))
+	cs.checkCast(tsnano, timesSec, *compute.DefaultCastOptions(true))
+
+	truncateOptions := compute.CastOptions{AllowTimeTruncate: true}
+
+	// truncation tests
+	cs.checkCastFails(timestamps, *compute.NewCastOptions(arrow.FixedWidthTypes.Time64us, true))
+	cs.checkCastFails(timestamps, *compute.NewCastOptions(arrow.FixedWidthTypes.Time32ms, true))
+	cs.checkCastFails(timestamps, *compute.NewCastOptions(arrow.FixedWidthTypes.Time32s, true))
+	cs.checkCastFails(timestampsMicro, *compute.NewCastOptions(arrow.FixedWidthTypes.Time32ms, true))
+	cs.checkCastFails(timestampsMicro, *compute.NewCastOptions(arrow.FixedWidthTypes.Time32s, true))
+	cs.checkCastFails(timestampsMilli, *compute.NewCastOptions(arrow.FixedWidthTypes.Time32s, true))
+	cs.checkCast(timestamps, timesNanoMicro, truncateOptions)
+	cs.checkCast(timestamps, timesNanoMilli, truncateOptions)
+	cs.checkCast(timestamps, timesSec, truncateOptions)
+	cs.checkCast(timestampsMicro, timesNanoMilli, truncateOptions)
+	cs.checkCast(timestampsMicro, timesSec, truncateOptions)
+	cs.checkCast(timestampsMilli, timesSec, truncateOptions)
+
+	// upscaling tests
+	cs.checkCast(timestampsMicro, timesMicroNano, *compute.DefaultCastOptions(true))
+	cs.checkCast(timestampsMilli, timesMilliNano, *compute.DefaultCastOptions(true))
+	cs.checkCast(timestampsMilli, timesMilliMicro, *compute.DefaultCastOptions(true))
+	cs.checkCast(timestampsSecond, timesNano, *compute.DefaultCastOptions(true))
+	cs.checkCast(timestampsSecond, timesMicro, *compute.DefaultCastOptions(true))
+	cs.checkCast(timestampsSecond, timesMilli, *compute.DefaultCastOptions(true))
+
+	// invalid timezone
+	for _, u := range []arrow.TimeUnit{arrow.Second, arrow.Millisecond, arrow.Microsecond, arrow.Nanosecond} {
+		timestamps, _, _ := array.FromJSON(cs.ectx.Mem, &arrow.TimestampType{Unit: u, TimeZone: "Mars/Mariner_Valley"}, strings.NewReader(timestampSecondsJSON))
+		defer timestamps.Release()
+		if u == arrow.Second || u == arrow.Millisecond {
+			cs.checkCastFails(timestamps, *compute.NewCastOptions(&arrow.Time32Type{Unit: u}, false))
+		} else {
+			cs.checkCastFails(timestamps, *compute.NewCastOptions(&arrow.Time64Type{Unit: u}, false))
+		}
+	}
+}
+
+func (cs *CastTestSuite) TestZonedTimestampToTime() {
+	cs.check(&arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: "Pacific/Marquesas"}, arrow.FixedWidthTypes.Time64ns,
+		timestampJSON, `[
+			52259123456789, 50003999999999, 56480001001001, 65000000000000,
+			56105001000000, 60010002000000, 63915003000000, 67820004132000,
+			71725005321000, 75630006163000, 79535000000000, 83440000000000,
+			945000000000, 52200000000000, 52200000000000, 55923000000000, null
+		]`, *compute.DefaultCastOptions(true))
+
+	const (
+		timeSec = `[
+			34259, 35603, 35960, 47000,
+			41705, 45610, 49515, 53420,
+			57325, 61230, 65135, 69040,
+			72945, 37800, 37800, 41523, null
+		]`
+		timeMilli = `[
+			34259000, 35603000, 35960000, 47000000,
+			41705000, 45610000, 49515000, 53420000,
+			57325000, 61230000, 65135000, 69040000,
+			72945000, 37800000, 37800000, 41523000, null
+		]`
+		timeMicro = `[
+			34259000000, 35603000000, 35960000000, 47000000000,
+			41705000000, 45610000000, 49515000000, 53420000000,
+			57325000000, 61230000000, 65135000000, 69040000000,
+			72945000000, 37800000000, 37800000000, 41523000000, null
+		]`
+		timeNano = `[
+			34259000000000, 35603000000000, 35960000000000, 47000000000000,
+			41705000000000, 45610000000000, 49515000000000, 53420000000000,
+			57325000000000, 61230000000000, 65135000000000, 69040000000000,
+			72945000000000, 37800000000000, 37800000000000, 41523000000000, null
+		]`
+	)
+
+	opts := *compute.DefaultCastOptions(true)
+	cs.check(&arrow.TimestampType{Unit: arrow.Second, TimeZone: "Australia/Broken_Hill"}, arrow.FixedWidthTypes.Time32s,
+		timestampSecondsJSON, timeSec, opts)
+	cs.check(&arrow.TimestampType{Unit: arrow.Millisecond, TimeZone: "Australia/Broken_Hill"}, arrow.FixedWidthTypes.Time32ms,
+		timestampSecondsJSON, timeMilli, opts)
+	cs.check(&arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "Australia/Broken_Hill"}, arrow.FixedWidthTypes.Time64us,
+		timestampSecondsJSON, timeMicro, opts)
+	cs.check(&arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: "Australia/Broken_Hill"}, arrow.FixedWidthTypes.Time64ns,
+		timestampSecondsJSON, timeNano, opts)
+}
+
+func (cs *CastTestSuite) TestTimeToTime() {
+	type timeTypePair struct {
+		coarse, fine arrow.DataType
+	}
+
+	options := compute.DefaultCastOptions(true)
+
+	cases := []timeTypePair{
+		{arrow.FixedWidthTypes.Time32s, arrow.FixedWidthTypes.Time32ms},
+		{arrow.FixedWidthTypes.Time32ms, arrow.FixedWidthTypes.Time64us},
+		{arrow.FixedWidthTypes.Time64us, arrow.FixedWidthTypes.Time64ns},
+	}
+	for _, tp := range cases {
+		coarse, _, _ := array.FromJSON(cs.ectx.Mem, tp.coarse, strings.NewReader(`[0, null, 200, 1, 2]`))
+		defer coarse.Release()
+		promoted, _, _ := array.FromJSON(cs.ectx.Mem, tp.fine, strings.NewReader(`[0, null, 200000, 1000, 2000]`))
+		defer promoted.Release()
+
+		cs.checkCast(coarse, promoted, *options)
+
+		willBeTruncated, _, _ := array.FromJSON(cs.ectx.Mem, tp.fine, strings.NewReader(`[0, null, 200456, 1123, 2456]`))
+		defer willBeTruncated.Release()
+
+		options.AllowTimeTruncate = false
+		options.ToType = tp.coarse
+		cs.checkCastFails(willBeTruncated, *options)
+
+		options.AllowTimeTruncate = true
+		cs.checkCast(willBeTruncated, coarse, *options)
+	}
+
+	cases = []timeTypePair{
+		{arrow.FixedWidthTypes.Time32s, arrow.FixedWidthTypes.Time64us},
+		{arrow.FixedWidthTypes.Time32ms, arrow.FixedWidthTypes.Time64ns},
+	}
+	for _, tp := range cases {
+		coarse, _, _ := array.FromJSON(cs.ectx.Mem, tp.coarse, strings.NewReader(`[0, null, 200, 1, 2]`))
+		defer coarse.Release()
+		promoted, _, _ := array.FromJSON(cs.ectx.Mem, tp.fine, strings.NewReader(`[0, null, 200000000, 1000000, 2000000]`))
+		defer promoted.Release()
+
+		cs.checkCast(coarse, promoted, *options)
+
+		willBeTruncated, _, _ := array.FromJSON(cs.ectx.Mem, tp.fine, strings.NewReader(`[0, null, 200456000, 1123000, 2456000]`))
+		defer willBeTruncated.Release()
+
+		options.AllowTimeTruncate = false
+		options.ToType = tp.coarse
+		cs.checkCastFails(willBeTruncated, *options)
+
+		options.AllowTimeTruncate = true
+		cs.checkCast(willBeTruncated, coarse, *options)
+	}
+
+	cases = []timeTypePair{
+		{arrow.FixedWidthTypes.Time32s, arrow.FixedWidthTypes.Time64ns},
+	}
+	for _, tp := range cases {
+		coarse, _, _ := array.FromJSON(cs.ectx.Mem, tp.coarse, strings.NewReader(`[0, null, 200, 1, 2]`))
+		defer coarse.Release()
+		promoted, _, _ := array.FromJSON(cs.ectx.Mem, tp.fine, strings.NewReader(`[0, null, 200000000000, 1000000000, 2000000000]`))
+		defer promoted.Release()
+
+		cs.checkCast(coarse, promoted, *options)
+
+		willBeTruncated, _, _ := array.FromJSON(cs.ectx.Mem, tp.fine, strings.NewReader(`[0, null, 200456000000, 1123000000, 2456000000]`))
+		defer willBeTruncated.Release()
+
+		options.AllowTimeTruncate = false
+		options.ToType = tp.coarse
+		cs.checkCastFails(willBeTruncated, *options)
+
+		options.AllowTimeTruncate = true
+		cs.checkCast(willBeTruncated, coarse, *options)
+	}
+}
+
+func (cs *CastTestSuite) TestTimestampZeroCopy() {
+	cs.checkZeroCopy(arrow.FixedWidthTypes.Timestamp_s, arrow.FixedWidthTypes.Timestamp_s, `[0, null, 2000, 1000, 0]`)
+	cs.checkZeroCopy(arrow.FixedWidthTypes.Timestamp_s, arrow.PrimitiveTypes.Int64, `[0, null, 2000, 1000, 0]`)
+	cs.checkZeroCopy(arrow.PrimitiveTypes.Int64, arrow.FixedWidthTypes.Timestamp_s, `[0, null, 2000, 1000, 0]`)
+}
+
+func (cs *CastTestSuite) TestTimestampToTimestampMultiplyOverflow() {
+	options := compute.NewCastOptions(arrow.FixedWidthTypes.Timestamp_ns, true)
+	// 1000-01-01, 1800-01-01, 2000-01-01, 2300-01-01, 3000-01-01
+	cs.checkFail(arrow.FixedWidthTypes.Timestamp_s, `[-30610224000, -5364662400, 946684800, 10413792000, 32503680000]`, *options)
+}
+
+func (cs *CastTestSuite) TestTimeZeroCopy() {
+	for _, dt := range []arrow.DataType{arrow.FixedWidthTypes.Time32s, arrow.PrimitiveTypes.Int32} {
+		cs.checkZeroCopy(arrow.FixedWidthTypes.Time32s, dt, `[0, null, 2000, 1000, 0]`)
+	}
+	cs.checkZeroCopy(arrow.PrimitiveTypes.Int32, arrow.FixedWidthTypes.Time32s, `[0, null, 2000, 1000, 0]`)
+
+	for _, dt := range []arrow.DataType{arrow.FixedWidthTypes.Time64us, arrow.PrimitiveTypes.Int64} {
+		cs.checkZeroCopy(arrow.FixedWidthTypes.Time64us, dt, `[0, null, 2000, 1000, 0]`)
+	}
+	cs.checkZeroCopy(arrow.PrimitiveTypes.Int64, arrow.FixedWidthTypes.Time64us, `[0, null, 2000, 1000, 0]`)
+}
+
+func (cs *CastTestSuite) TestDateToDate() {
+	day32, _, _ := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Date32, strings.NewReader(`[0, null, 100, 1, 10]`))
+	defer day32.Release()
+	day64, _, _ := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Date64,
+		strings.NewReader(`[0, null, 8640000000, 86400000, 864000000]`))
+	defer day64.Release()
+
+	// multiply promotion
+	cs.checkCast(day32, day64, *compute.DefaultCastOptions(true))
+	// no truncation
+	cs.checkCast(day64, day32, *compute.DefaultCastOptions(true))
+
+	day64WillBeTruncated, _, _ := array.FromJSON(cs.ectx.Mem, arrow.FixedWidthTypes.Date64,
+		strings.NewReader(`[0, null, 8640000123, 86400456, 864000789]`))
+	defer day64WillBeTruncated.Release()
+
+	options := compute.NewCastOptions(arrow.FixedWidthTypes.Date32, true)
+	cs.checkCastFails(day64WillBeTruncated, *options)
+
+	// divide truncate
+	options.AllowTimeTruncate = true
+	cs.checkCast(day64WillBeTruncated, day32, *options)
+}
+
+func (cs *CastTestSuite) TestDateZeroCopy() {
+	for _, dt := range []arrow.DataType{arrow.FixedWidthTypes.Date32, arrow.PrimitiveTypes.Int32} {
+		cs.checkZeroCopy(arrow.FixedWidthTypes.Date32, dt, `[0, null, 2000, 1000, 0]`)
+	}
+	cs.checkZeroCopy(arrow.PrimitiveTypes.Int32, arrow.FixedWidthTypes.Date32, `[0, null, 2000, 1000, 0]`)
+
+	for _, dt := range []arrow.DataType{arrow.FixedWidthTypes.Date64, arrow.PrimitiveTypes.Int64} {
+		cs.checkZeroCopy(arrow.FixedWidthTypes.Date64, dt, `[0, null, 2000, 1000, 0]`)
+	}
+	cs.checkZeroCopy(arrow.PrimitiveTypes.Int64, arrow.FixedWidthTypes.Date64, `[0, null, 2000, 1000, 0]`)
+}
+
+func (cs *CastTestSuite) TestDurationToDuration() {
+	type durationTypePair struct {
+		coarse, fine arrow.DataType
+	}
+
+	options := compute.DefaultCastOptions(true)
+
+	cases := []durationTypePair{
+		{arrow.FixedWidthTypes.Duration_s, arrow.FixedWidthTypes.Duration_ms},
+		{arrow.FixedWidthTypes.Duration_ms, arrow.FixedWidthTypes.Duration_us},
+		{arrow.FixedWidthTypes.Duration_us, arrow.FixedWidthTypes.Duration_ns},
+	}
+	for _, tp := range cases {
+		coarse, _, _ := array.FromJSON(cs.ectx.Mem, tp.coarse, strings.NewReader(`[0, null, 200, 1, 2]`))
+		defer coarse.Release()
+		promoted, _, _ := array.FromJSON(cs.ectx.Mem, tp.fine, strings.NewReader(`[0, null, 200000, 1000, 2000]`))
+		defer promoted.Release()
+
+		cs.checkCast(coarse, promoted, *options)
+
+		willBeTruncated, _, _ := array.FromJSON(cs.ectx.Mem, tp.fine, strings.NewReader(`[0, null, 200456, 1123, 2456]`))
+		defer willBeTruncated.Release()
+
+		options.AllowTimeTruncate = false
+		options.ToType = tp.coarse
+		cs.checkCastFails(willBeTruncated, *options)
+
+		options.AllowTimeTruncate = true
+		cs.checkCast(willBeTruncated, coarse, *options)
+	}
+
+	cases = []durationTypePair{
+		{arrow.FixedWidthTypes.Duration_s, arrow.FixedWidthTypes.Duration_us},
+		{arrow.FixedWidthTypes.Duration_ms, arrow.FixedWidthTypes.Duration_ns},
+	}
+	for _, tp := range cases {
+		coarse, _, _ := array.FromJSON(cs.ectx.Mem, tp.coarse, strings.NewReader(`[0, null, 200, 1, 2]`))
+		defer coarse.Release()
+		promoted, _, _ := array.FromJSON(cs.ectx.Mem, tp.fine, strings.NewReader(`[0, null, 200000000, 1000000, 2000000]`))
+		defer promoted.Release()
+
+		cs.checkCast(coarse, promoted, *options)
+
+		willBeTruncated, _, _ := array.FromJSON(cs.ectx.Mem, tp.fine, strings.NewReader(`[0, null, 200456000, 1123000, 2456000]`))
+		defer willBeTruncated.Release()
+
+		options.AllowTimeTruncate = false
+		options.ToType = tp.coarse
+		cs.checkCastFails(willBeTruncated, *options)
+
+		options.AllowTimeTruncate = true
+		cs.checkCast(willBeTruncated, coarse, *options)
+	}
+
+	cases = []durationTypePair{
+		{arrow.FixedWidthTypes.Duration_s, arrow.FixedWidthTypes.Duration_ns},
+	}
+	for _, tp := range cases {
+		coarse, _, _ := array.FromJSON(cs.ectx.Mem, tp.coarse, strings.NewReader(`[0, null, 200, 1, 2]`))
+		defer coarse.Release()
+		promoted, _, _ := array.FromJSON(cs.ectx.Mem, tp.fine, strings.NewReader(`[0, null, 200000000000, 1000000000, 2000000000]`))
+		defer promoted.Release()
+
+		cs.checkCast(coarse, promoted, *options)
+
+		willBeTruncated, _, _ := array.FromJSON(cs.ectx.Mem, tp.fine, strings.NewReader(`[0, null, 200456000000, 1123000000, 2456000000]`))
+		defer willBeTruncated.Release()
+
+		options.AllowTimeTruncate = false
+		options.ToType = tp.coarse
+		cs.checkCastFails(willBeTruncated, *options)
+
+		options.AllowTimeTruncate = true
+		cs.checkCast(willBeTruncated, coarse, *options)
+	}
+}
+
+func (cs *CastTestSuite) TestDurationZeroCopy() {
+	for _, dt := range []arrow.DataType{arrow.FixedWidthTypes.Duration_s, arrow.PrimitiveTypes.Int64} {
+		cs.checkZeroCopy(arrow.FixedWidthTypes.Duration_s, dt, `[0, null, 2000, 1000, 0]`)
+	}
+	cs.checkZeroCopy(arrow.PrimitiveTypes.Int64, arrow.FixedWidthTypes.Duration_s, `[0, null, 2000, 1000, 0]`)
+}
+
+func (cs *CastTestSuite) TestMiscToFloating() {
+	opts := *compute.DefaultCastOptions(true)
+	for _, dt := range []arrow.DataType{arrow.PrimitiveTypes.Float32, arrow.PrimitiveTypes.Float64} {
+		cs.check(arrow.PrimitiveTypes.Int16, dt, `[0, null, 200, 1, 2]`, `[0, null, 200, 1, 2]`, opts)
+		cs.check(arrow.PrimitiveTypes.Float32, dt, `[0, null, 200, 1, 2]`, `[0, null, 200, 1, 2]`, opts)
+		cs.check(arrow.FixedWidthTypes.Boolean, dt, `[true, null, false, false, true]`, `[1, null, 0, 0, 1]`, opts)
+	}
+}
+
+func (cs *CastTestSuite) TestDurationToDurationMultiplyOverflow() {
+	options := compute.NewCastOptions(arrow.FixedWidthTypes.Duration_ns, true)
+	cs.checkFail(arrow.FixedWidthTypes.Duration_s, `[10000000000, 1, 2, 3, 10000000000]`, *options)
+}
+
+func (cs *CastTestSuite) TestIdentityCasts() {
+	checkIdent := func(dt arrow.DataType, json string) {
+		cs.checkZeroCopy(dt, dt, json)
+	}
+
+	checkIdent(arrow.Null, `[null, null, null]`)
+	checkIdent(arrow.FixedWidthTypes.Boolean, `[false, true, null, false]`)
+	for _, dt := range numericTypes {
+		checkIdent(dt, `[1, 2, null, 4]`)
+	}
+	checkIdent(arrow.BinaryTypes.Binary, `["Rk9P", "YmFy"]`)
+	checkIdent(arrow.BinaryTypes.String, `["foo", "bar"]`)
+	checkIdent(&arrow.FixedSizeBinaryType{ByteWidth: 3}, `["Rk9P", "YmFy"]`)
+
+	checkIdent(arrow.FixedWidthTypes.Time32ms, `[1, 2, 3, 4]`)
+	checkIdent(arrow.FixedWidthTypes.Time64us, `[1, 2, 3, 4]`)
+	checkIdent(arrow.FixedWidthTypes.Date32, `[1, 2, 3, 4]`)
+	checkIdent(arrow.FixedWidthTypes.Date64, `[86400000, 0]`)
+	checkIdent(arrow.FixedWidthTypes.Timestamp_s, `[1, 2, 3, 4]`)
+}
+
+func (cs *CastTestSuite) TestEmptyCast() {
+	checkEmpty := func(from, to arrow.DataType) {
+		in := array.MakeFromData(array.NewData(from, 0, []*memory.Buffer{nil, nil}, nil, 0, 0))
+		out := array.MakeFromData(array.NewData(to, 0, []*memory.Buffer{nil, nil}, nil, 0, 0))
+
+		cs.checkCast(in, out, *compute.DefaultCastOptions(true))
+	}
+
+	for _, dt := range numericTypes {
+		checkEmpty(arrow.FixedWidthTypes.Boolean, dt)
+		// checkEmpty(dt, arrow.FixedWidthTypes.Boolean)
 	}
 }
 

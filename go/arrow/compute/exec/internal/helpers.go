@@ -18,6 +18,7 @@ package internal
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/apache/arrow/go/v8/arrow"
 	"github.com/apache/arrow/go/v8/arrow/bitutil"
@@ -26,6 +27,7 @@ import (
 	"github.com/apache/arrow/go/v8/arrow/decimal128"
 	"github.com/apache/arrow/go/v8/arrow/scalar"
 	"github.com/apache/arrow/go/v8/internal/bitutils"
+	"golang.org/x/exp/constraints"
 )
 
 func unboxScalar[T primitive | ~bool | decimal128.Num](v scalar.Scalar) T {
@@ -34,6 +36,28 @@ func unboxScalar[T primitive | ~bool | decimal128.Num](v scalar.Scalar) T {
 
 func boxScalar[T primitive | ~bool | decimal128.Num](val T, v scalar.Scalar) {
 	reinterpret[T](v.(scalar.PrimitiveScalar).Data())[0] = val
+}
+
+func SizeOf[T constraints.Integer]() uint {
+	x := uint16(1 << 8)
+	y := uint32(2 << 16)
+	z := uint64(4 << 32)
+	return 1 + uint(T(x))>>8 + uint(T(y))>>16 + uint(T(z))>>32
+}
+
+func MinOf[T constraints.Integer]() T {
+	if ones := ^T(0); ones < 0 {
+		return ones << (8*SizeOf[T]() - 1)
+	}
+	return 0
+}
+
+func MaxOf[T constraints.Integer]() T {
+	ones := ^T(0)
+	if ones < 0 {
+		return ones ^ (ones << (8*SizeOf[T]() - 1))
+	}
+	return ones
 }
 
 func ExecScalarUnary[OutType, Arg0Type primitive](op func(ctx *functions.KernelCtx, val Arg0Type) OutType) functions.ArrayKernelExec {
@@ -151,6 +175,42 @@ func scalarUnaryNotNullStateful[OutType primitive | decimal128.Num, Arg0Type pri
 	}
 }
 
+func scalarUnaryNotNullStatefulBinaryArg[OutType primitive | decimal128.Num](op func(*functions.KernelCtx, []byte, *error) OutType) functions.ArrayKernelExec {
+	return func(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+		if batch.Values[0].Kind() == compute.KindArray {
+			var (
+				outArr      = out.(*compute.ArrayDatum).Value
+				outData     = getVals[OutType](outArr, 1)
+				outPos      = 0
+				arg0        = batch.Values[0].(*compute.ArrayDatum).Value
+				arg0Offsets = reinterpret[int32](arg0.Buffers()[2].Bytes())[arg0.Offset() : arg0.Offset()+arg0.Len()+1]
+				arg0Data    = arg0.Buffers()[2].Bytes()
+				def         OutType
+				err         error
+			)
+			bitutils.VisitBitBlocks(arg0.Buffers()[0].Bytes(), int64(arg0.Offset()), int64(arg0.Len()),
+				func(pos int64) {
+					v := arg0Data[arg0Offsets[pos]:arg0Offsets[pos+1]]
+					outData[outPos] = op(ctx, v, &err)
+					outPos++
+				}, func() {
+					outData[outPos] = def
+					outPos++
+				})
+			return err
+		}
+		var (
+			arg0      = batch.Values[0].(*compute.ScalarDatum).Value
+			outScalar = out.(*compute.ScalarDatum).Value
+			err       error
+		)
+		if arg0.IsValid() {
+			boxScalar(op(ctx, arg0.(scalar.BinaryScalar).Data(), &err), outScalar)
+		}
+		return err
+	}
+}
+
 func maxDecimalDigitsForInt(id arrow.Type) (int32, error) {
 	switch id {
 	case arrow.INT8, arrow.UINT8:
@@ -165,4 +225,75 @@ func maxDecimalDigitsForInt(id arrow.Type) (int32, error) {
 		return 20, nil
 	}
 	return -1, fmt.Errorf("not an integer type: %s", id)
+}
+
+func ShiftTime[InT, OutT constraints.Integer](ctx *functions.KernelCtx, op arrow.TimestampConvertOP, factor int64, input, output arrow.ArrayData) error {
+	options := ctx.State.(*compute.CastOptions)
+	inData := getVals[InT](input, 1)
+	outData := getVals[OutT](output, 1)
+
+	switch {
+	case factor == 1:
+		for i, v := range inData {
+			outData[i] = OutT(v)
+		}
+	case op == arrow.ConvMULTIPLY:
+		if options.AllowTimeOverflow {
+			for i, v := range inData {
+				outData[i] = OutT(v) * OutT(factor)
+			}
+			break
+		}
+
+		maxVal, minVal := math.MaxInt64/factor, math.MinInt64/factor
+		if input.NullN() == 0 {
+			for i, v := range inData {
+				if int64(v) < minVal || int64(v) > maxVal {
+					return fmt.Errorf("%w: casting from %s to %s would result in out of bounds timestamp: %d",
+						compute.ErrInvalid, input.DataType(), output.DataType(), v)
+				}
+				outData[i] = OutT(v) * OutT(factor)
+			}
+			break
+		}
+
+		bitrdr := bitutil.NewBitmapReader(input.Buffers()[0].Bytes(), input.Offset(), input.Len())
+		for i, v := range inData {
+			if bitrdr.Set() && (int64(v) < minVal || int64(v) > maxVal) {
+				return fmt.Errorf("%w: casting from %s to %s would result in out of bounds timestamp: %d",
+					compute.ErrInvalid, input.DataType(), output.DataType(), v)
+			}
+			outData[i] = OutT(v) * OutT(factor)
+			bitrdr.Next()
+		}
+	default: // divide
+		if options.AllowTimeTruncate {
+			for i, v := range inData {
+				outData[i] = OutT(v / InT(factor))
+			}
+			break
+		}
+
+		if input.NullN() == 0 {
+			for i, v := range inData {
+				outData[i] = OutT(v / InT(factor))
+				if outData[i]*OutT(factor) != OutT(v) {
+					return fmt.Errorf("%w: casting from %s to %s would lose data: %d",
+						compute.ErrInvalid, input.DataType(), output.DataType(), v)
+				}
+			}
+			break
+		}
+
+		bitrdr := bitutil.NewBitmapReader(input.Buffers()[0].Bytes(), input.Offset(), input.Len())
+		for i, v := range inData {
+			outData[i] = OutT(v / InT(factor))
+			if bitrdr.Set() && (outData[i]*OutT(factor) != OutT(v)) {
+				return fmt.Errorf("%w: casting from %s to %s would lose data: %d",
+					compute.ErrInvalid, input.DataType(), output.DataType(), v)
+			}
+			bitrdr.Next()
+		}
+	}
+	return nil
 }
