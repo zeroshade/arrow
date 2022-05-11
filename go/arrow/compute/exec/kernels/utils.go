@@ -17,9 +17,9 @@
 package kernels
 
 import (
-	"github.com/apache/arrow/go/v8/arrow/compute"
-	"github.com/apache/arrow/go/v8/arrow/compute/exec/functions"
-	"github.com/apache/arrow/go/v8/arrow/scalar"
+	"github.com/apache/arrow/go/v9/arrow/compute"
+	"github.com/apache/arrow/go/v9/arrow/compute/exec/functions"
+	"github.com/apache/arrow/go/v9/arrow/scalar"
 )
 
 func trivialScalarUnaryAsArrayExec(kernelExec functions.ArrayKernelExec, hndl functions.NullHandling) functions.ArrayKernelExec {

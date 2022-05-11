@@ -21,10 +21,10 @@ import (
 	"math"
 	"sync"
 
-	"github.com/apache/arrow/go/v8/arrow/compute"
-	"github.com/apache/arrow/go/v8/arrow/compute/exec/functions"
-	"github.com/apache/arrow/go/v8/arrow/compute/exec/kernels"
-	"github.com/apache/arrow/go/v8/arrow/memory"
+	"github.com/apache/arrow/go/v9/arrow/compute"
+	"github.com/apache/arrow/go/v9/arrow/compute/exec/functions"
+	"github.com/apache/arrow/go/v9/arrow/compute/exec/kernels"
+	"github.com/apache/arrow/go/v9/arrow/memory"
 )
 
 var (

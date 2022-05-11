@@ -1,9 +1,9 @@
-module github.com/apache/arrow/go/v8/arrow/compute/exec
+module github.com/apache/arrow/go/v9/arrow/compute/exec
 
 go 1.18
 
 require (
-	github.com/apache/arrow/go/v8 v8.0.0-20220503193027-526fa070c82c
+	github.com/apache/arrow/go/v9 v9.0.0-20220511115301-0bae875bb8d9
 	github.com/stretchr/testify v1.7.1
 	golang.org/x/exp v0.0.0-20220428152302-39d4317da171
 )

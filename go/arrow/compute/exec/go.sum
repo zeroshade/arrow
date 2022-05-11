@@ -21,8 +21,8 @@ github.com/alecthomas/units v0.0.0-20190717042225-c3de453c63f4/go.mod h1:ybxpYRF
 github.com/andybalholm/brotli v1.0.4 h1:V7DdXeJtZscaqfNuAdSRuRFzuiKlHSC/Zh3zl9qY3JY=
 github.com/andybalholm/brotli v1.0.4/go.mod h1:fO7iG3H7G2nSZ7m0zPUDn85XEX2GTukHGRSepvi9Eig=
 github.com/antihax/optional v1.0.0/go.mod h1:uupD/76wgC+ih3iEmQUL+0Ugr19nfwCT1kdvxnR2qWY=
-github.com/apache/arrow/go/v8 v8.0.0-20220503193027-526fa070c82c h1:94tKmXbeKcVqiU+CvMMyUGT/xcxHH0TSoLj2j7xpb1U=
-github.com/apache/arrow/go/v8 v8.0.0-20220503193027-526fa070c82c/go.mod h1:63co72EKYQT9WKr8Y1Yconk4dysC0t79wNDauYO1ZGg=
+github.com/apache/arrow/go/v9 v9.0.0-20220511115301-0bae875bb8d9 h1:kJ0DFy0WIBfT9q3qS4JV04wtxZS5bUAZgRBLSDzfP+k=
+github.com/apache/arrow/go/v9 v9.0.0-20220511115301-0bae875bb8d9/go.mod h1:Ckw6oh8wIcLsJZOnqHOHj1iro5TmLeqDzPL77K8Cgzg=
 github.com/apache/thrift v0.12.0/go.mod h1:cp2SuWMxlEZw2r+iP2GNCdIi4C1qmUzdZFSVb+bacwQ=
 github.com/apache/thrift v0.13.0/go.mod h1:cp2SuWMxlEZw2r+iP2GNCdIi4C1qmUzdZFSVb+bacwQ=
 github.com/apache/thrift v0.15.0 h1:aGvdaR0v1t9XLgjtBYwxcBvBOTMqClzwE26CHOgjW1Y=

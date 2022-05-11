@@ -21,7 +21,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/apache/arrow/go/v8/arrow/compute"
+	"github.com/apache/arrow/go/v9/arrow/compute"
 )
 
 type Arity struct {

@@ -20,11 +20,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/apache/arrow/go/v8/arrow"
-	"github.com/apache/arrow/go/v8/arrow/bitutil"
-	"github.com/apache/arrow/go/v8/arrow/compute"
-	"github.com/apache/arrow/go/v8/arrow/internal/debug"
-	"github.com/apache/arrow/go/v8/internal/bitutils"
+	"github.com/apache/arrow/go/v9/arrow"
+	"github.com/apache/arrow/go/v9/arrow/bitutil"
+	"github.com/apache/arrow/go/v9/arrow/compute"
+	"github.com/apache/arrow/go/v9/arrow/internal/debug"
+	"github.com/apache/arrow/go/v9/internal/bitutils"
 	"golang.org/x/exp/constraints"
 )
 

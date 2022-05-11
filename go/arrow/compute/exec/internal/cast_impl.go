@@ -22,13 +22,13 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/apache/arrow/go/v8/arrow"
-	"github.com/apache/arrow/go/v8/arrow/array"
-	"github.com/apache/arrow/go/v8/arrow/compute"
-	"github.com/apache/arrow/go/v8/arrow/compute/exec/functions"
-	"github.com/apache/arrow/go/v8/arrow/decimal128"
-	"github.com/apache/arrow/go/v8/arrow/internal/debug"
-	"github.com/apache/arrow/go/v8/arrow/scalar"
+	"github.com/apache/arrow/go/v9/arrow"
+	"github.com/apache/arrow/go/v9/arrow/array"
+	"github.com/apache/arrow/go/v9/arrow/compute"
+	"github.com/apache/arrow/go/v9/arrow/compute/exec/functions"
+	"github.com/apache/arrow/go/v9/arrow/decimal128"
+	"github.com/apache/arrow/go/v9/arrow/internal/debug"
+	"github.com/apache/arrow/go/v9/arrow/scalar"
 	"golang.org/x/exp/constraints"
 )
 
