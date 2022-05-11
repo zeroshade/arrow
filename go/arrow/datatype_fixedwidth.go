@@ -77,6 +77,10 @@ func (d Date32) ToTime() time.Time {
 	return time.Unix(0, 0).UTC().AddDate(0, 0, int(d))
 }
 
+func (d Date32) FormattedString() string {
+	return d.ToTime().Format("2006-01-02")
+}
+
 // Date64FromTime returns a Date64 value from a time object
 func Date64FromTime(t time.Time) Date64 {
 	if _, offset := t.Zone(); offset != 0 {
@@ -91,29 +95,40 @@ func (d Date64) ToTime() time.Time {
 	return time.Unix(0, 0).UTC().AddDate(0, 0, days)
 }
 
-// TimestampFromString parses a string and returns a timestamp for the given unit
-// level.
-//
-// The timestamp should be in one of the following forms, [T] can be either T
-// or a space, and [.zzzzzzzzz] can be either left out or up to 9 digits of
-// fractions of a second.
-//
-//	 YYYY-MM-DD
-//	 YYYY-MM-DD[T]HH
-//   YYYY-MM-DD[T]HH:MM
-//   YYYY-MM-DD[T]HH:MM:SS[.zzzzzzzz]
-func TimestampFromString(val string, unit TimeUnit) (Timestamp, error) {
+func (d Date64) FormattedString() string {
+	return d.ToTime().Format("2006-01-02")
+}
+
+func TimestampFromStringInLocation(val string, unit TimeUnit, loc *time.Location) (Timestamp, error) {
+	if len(val) < 10 {
+		return 0, fmt.Errorf("invalid timestamp string")
+	}
+
 	format := "2006-01-02"
-	if val[len(val)-1] == 'Z' {
-		val = val[:len(val)-1]
+	var zoneFmt string
+	lenWithoutZone := len(val)
+	if lenWithoutZone > 10 {
+		if val[len(val)-1] == 'Z' {
+			zoneFmt = "Z"
+			lenWithoutZone--
+		} else if val[len(val)-3] == '+' || val[len(val)-3] == '-' {
+			zoneFmt = "-07"
+			lenWithoutZone -= 3
+		} else if val[len(val)-5] == '+' || val[len(val)-5] == '-' {
+			zoneFmt = "-0700"
+			lenWithoutZone -= 5
+		} else if val[len(val)-6] == '+' || val[len(val)-6] == '-' {
+			zoneFmt = "-07:00"
+			lenWithoutZone -= 6
+		}
 	}
 
 	switch {
-	case len(val) == 13:
+	case lenWithoutZone == 13:
 		format += string(val[10]) + "15"
-	case len(val) == 16:
+	case lenWithoutZone == 16:
 		format += string(val[10]) + "15:04"
-	case len(val) >= 19:
+	case lenWithoutZone >= 19:
 		format += string(val[10]) + "15:04:05.999999999"
 	}
 
@@ -121,18 +136,20 @@ func TimestampFromString(val string, unit TimeUnit) (Timestamp, error) {
 	// don't need a case for nano as time.Parse will already error if
 	// more than nanosecond precision is provided
 	switch {
-	case unit == Second && len(val) > 19:
+	case unit == Second && lenWithoutZone > 19:
 		return 0, xerrors.New("provided more than second precision for timestamp[s]")
-	case unit == Millisecond && len(val) > 23:
+	case unit == Millisecond && lenWithoutZone > 23:
 		return 0, xerrors.New("provided more than millisecond precision for timestamp[ms]")
-	case unit == Microsecond && len(val) > 26:
+	case unit == Microsecond && lenWithoutZone > 26:
 		return 0, xerrors.New("provided more than microsecond precision for timestamp[us]")
 	}
 
-	out, err := time.ParseInLocation(format, val, time.UTC)
+	format += zoneFmt
+	out, err := time.Parse(format, val)
 	if err != nil {
 		return 0, err
 	}
+	out = out.In(loc).UTC()
 
 	switch unit {
 	case Second:
@@ -145,6 +162,21 @@ func TimestampFromString(val string, unit TimeUnit) (Timestamp, error) {
 		return Timestamp(out.UnixNano()), nil
 	}
 	return 0, fmt.Errorf("unexpected timestamp unit: %s", unit)
+}
+
+// TimestampFromString parses a string and returns a timestamp for the given unit
+// level.
+//
+// The timestamp should be in one of the following forms, [T] can be either T
+// or a space, and [.zzzzzzzzz] can be either left out or up to 9 digits of
+// fractions of a second.
+//
+//	 YYYY-MM-DD
+//	 YYYY-MM-DD[T]HH
+//   YYYY-MM-DD[T]HH:MM
+//   YYYY-MM-DD[T]HH:MM:SS[.zzzzzzzz]
+func TimestampFromString(val string, unit TimeUnit) (Timestamp, error) {
+	return TimestampFromStringInLocation(val, unit, time.UTC)
 }
 
 func (t Timestamp) ToTime(unit TimeUnit) time.Time {
@@ -195,6 +227,18 @@ func (t Time32) ToTime(unit TimeUnit) time.Time {
 	return time.Unix(0, int64(t)*int64(unit.Multiplier())).UTC()
 }
 
+func (t Time32) FormattedString(unit TimeUnit) string {
+	const baseFmt = "15:04:05"
+	tm := t.ToTime(unit)
+	switch unit {
+	case Second:
+		return tm.Format(baseFmt)
+	case Millisecond:
+		return tm.Format(baseFmt + ".000")
+	}
+	return ""
+}
+
 // Time64FromString parses a string to return a Time64 value in the given unit,
 // unit needs to be only microseconds or nanoseconds and the string should be in the
 // form of HH:MM or HH:MM:SS[.zzzzzzzzz] where the fractions of a second are optional.
@@ -234,6 +278,18 @@ func (t Time64) ToTime(unit TimeUnit) time.Time {
 	return time.Unix(0, int64(t)*int64(unit.Multiplier())).UTC()
 }
 
+func (t Time64) FormattedString(unit TimeUnit) string {
+	const baseFmt = "15:04:05.000000"
+	tm := t.ToTime(unit)
+	switch unit {
+	case Microsecond:
+		return tm.Format(baseFmt)
+	case Nanosecond:
+		return tm.Format(baseFmt + "000")
+	}
+	return ""
+}
+
 const (
 	Second TimeUnit = iota
 	Millisecond
@@ -258,6 +314,8 @@ type TemporalWithUnit interface {
 type TimestampType struct {
 	Unit     TimeUnit
 	TimeZone string
+
+	loc *time.Location
 }
 
 func (*TimestampType) ID() Type     { return TIMESTAMP }
@@ -285,6 +343,10 @@ func (TimestampType) Layout() DataTypeLayout {
 func (t *TimestampType) TimeUnit() TimeUnit { return t.Unit }
 
 func (t *TimestampType) GetZone() (*time.Location, error) {
+	if t.loc != nil {
+		return t.loc, nil
+	}
+
 	// the TimeZone string is allowed to be either a valid tzdata string
 	// such as "America/New_York" or an absolute offset of the form -XX:XX
 	// or +XX:XX.
@@ -292,10 +354,12 @@ func (t *TimestampType) GetZone() (*time.Location, error) {
 	// As such, we have two methods we can try. First we'll try LoadLocation
 	// and if that fails, we'll try testing for the absolute offset.
 	if t.TimeZone == "" || t.TimeZone == "UTC" || t.TimeZone == "utc" {
+		t.loc = time.UTC
 		return time.UTC, nil
 	}
 
 	if loc, err := time.LoadLocation(t.TimeZone); err == nil {
+		t.loc = loc
 		return loc, err
 	}
 
@@ -305,11 +369,12 @@ func (t *TimestampType) GetZone() (*time.Location, error) {
 	noColon := strings.Replace(t.TimeZone, ":", "", -1)
 	timetz, err := time.Parse("-0700", noColon)
 	if err != nil {
-		return nil, fmt.Errorf("could not find timezone location for '%s'", t.TimeZone)
+		return time.UTC, fmt.Errorf("could not find timezone location for '%s'", t.TimeZone)
 	}
 
 	_, offset := timetz.Zone()
-	return time.FixedZone(t.TimeZone, offset), nil
+	t.loc = time.FixedZone(t.TimeZone, offset)
+	return t.loc, nil
 }
 
 func (t *TimestampType) GetToTimeFunc() (func(Timestamp) time.Time, error) {

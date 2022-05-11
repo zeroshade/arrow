@@ -210,7 +210,12 @@ func (b *{{.Name}}Builder) unmarshalOne(dec *json.Decoder) error {
 		b.Append({{.QualifiedType}}(v))
 {{else if or (eq .Name "Time32") (eq .Name "Time64") (eq .Name "Timestamp") -}}
 	case string:
+{{if (eq .Name "Timestamp") -}}
+		loc, _ := b.dtype.GetZone()
+		tm, err := arrow.TimestampFromStringInLocation(v, b.dtype.Unit, loc)
+{{else -}}
 		tm, err := {{.QualifiedType}}FromString(v, b.dtype.Unit)
+{{end}}
 		if err != nil {
 			return &json.UnmarshalTypeError{
 				Value: v,

@@ -19,16 +19,19 @@ package internal
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 	"unsafe"
 
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
+	"github.com/apache/arrow/go/v9/arrow/bitutil"
 	"github.com/apache/arrow/go/v9/arrow/compute"
 	"github.com/apache/arrow/go/v9/arrow/compute/exec/functions"
 	"github.com/apache/arrow/go/v9/arrow/decimal128"
 	"github.com/apache/arrow/go/v9/arrow/internal/debug"
 	"github.com/apache/arrow/go/v9/arrow/scalar"
+	"github.com/apache/arrow/go/v9/internal/bitutils"
 	"golang.org/x/exp/constraints"
 )
 
@@ -349,9 +352,89 @@ func DoubleToDecimal128(ctx *functions.KernelCtx, batch *functions.ExecBatch, ou
 	return exec(ctx, batch, out)
 }
 
+func GetParseStringExec(out arrow.Type) functions.ArrayKernelExec {
+	switch out {
+	case arrow.INT8:
+		return parseStringToNumberImpl(func(s string) (int8, error) {
+			v, err := strconv.ParseInt(s, 0, 8)
+			return int8(v), err
+		})
+	case arrow.INT16:
+		return parseStringToNumberImpl(func(s string) (int16, error) {
+			v, err := strconv.ParseInt(s, 0, 16)
+			return int16(v), err
+		})
+	case arrow.INT32:
+		return parseStringToNumberImpl(func(s string) (int32, error) {
+			v, err := strconv.ParseInt(s, 0, 32)
+			return int32(v), err
+		})
+	case arrow.INT64:
+		return parseStringToNumberImpl(func(s string) (int64, error) {
+			return strconv.ParseInt(s, 0, 64)
+		})
+	case arrow.UINT8:
+		return parseStringToNumberImpl(func(s string) (uint8, error) {
+			v, err := strconv.ParseUint(s, 0, 8)
+			return uint8(v), err
+		})
+	case arrow.UINT16:
+		return parseStringToNumberImpl(func(s string) (uint16, error) {
+			v, err := strconv.ParseUint(s, 0, 16)
+			return uint16(v), err
+		})
+	case arrow.UINT32:
+		return parseStringToNumberImpl(func(s string) (uint32, error) {
+			v, err := strconv.ParseUint(s, 0, 32)
+			return uint32(v), err
+		})
+	case arrow.UINT64:
+		return parseStringToNumberImpl(func(s string) (uint64, error) {
+			return strconv.ParseUint(s, 0, 64)
+		})
+	case arrow.FLOAT32:
+		return parseStringToNumberImpl(func(s string) (float32, error) {
+			v, err := strconv.ParseFloat(s, 32)
+			return float32(v), err
+		})
+	case arrow.FLOAT64:
+		return parseStringToNumberImpl(func(s string) (float64, error) {
+			return strconv.ParseFloat(s, 64)
+		})
+	}
+	return nil
+}
+
+func parseStringToNumberImpl[T constraints.Integer | constraints.Float](parseFn func(string) (T, error)) functions.ArrayKernelExec {
+	return func(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+		exec := scalarUnaryNotNullStatefulBinaryArg(func(_ *functions.KernelCtx, input []byte, err *error) T {
+			st := *(*string)(unsafe.Pointer(&input))
+			v, e := parseFn(st)
+			if e != nil {
+				*err = e
+			}
+			return v
+		})
+		return exec(ctx, batch, out)
+	}
+}
+
 var (
 	epoch = time.Unix(0, 0)
 )
+
+func StringToTimestamp(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+	outType := out.Type().(*arrow.TimestampType)
+	exec := scalarUnaryNotNullStatefulBinaryArg(func(_ *functions.KernelCtx, input []byte, err *error) arrow.Timestamp {
+		v := *(*string)(unsafe.Pointer(&input))
+		result, e := arrow.TimestampFromString(v, outType.Unit)
+		if e != nil {
+			*err = e
+		}
+		return result
+	})
+	return exec(ctx, batch, out)
+}
 
 func TimestampToDate32(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
 	inType := batch.Values[0].Type().(*arrow.TimestampType)
@@ -529,4 +612,225 @@ func SimpleTemporalCast[I, O arrow.Duration | arrow.Time32 | arrow.Time64 | arro
 
 	op, factor := arrow.GetTimestampConvert(inType.TimeUnit(), outType.TimeUnit())
 	return ShiftTime[I, O](ctx, op, factor, input, output)
+}
+
+func date32ToString(bldr *array.BinaryBuilder, input arrow.ArrayData) {
+	vals := getVals[arrow.Date32](input, 1)
+	var bitmap []byte
+	if input.Buffers()[0] != nil {
+		bitmap = input.Buffers()[0].Bytes()
+	}
+	bitutils.VisitBitBlocks(bitmap, int64(input.Offset()), int64(input.Len()),
+		func(pos int64) {
+			bldr.AppendString(vals[pos].FormattedString())
+		}, func() {
+			bldr.AppendNull()
+		})
+}
+
+func date64ToString(bldr *array.BinaryBuilder, input arrow.ArrayData) {
+	vals := getVals[arrow.Date64](input, 1)
+	var bitmap []byte
+	if input.Buffers()[0] != nil {
+		bitmap = input.Buffers()[0].Bytes()
+	}
+	bitutils.VisitBitBlocks(bitmap, int64(input.Offset()), int64(input.Len()),
+		func(pos int64) {
+			bldr.AppendString(vals[pos].FormattedString())
+		}, func() {
+			bldr.AppendNull()
+		})
+}
+
+func time32ToString(bldr *array.BinaryBuilder, input arrow.ArrayData) {
+	vals := getVals[arrow.Time32](input, 1)
+	var bitmap []byte
+	if input.Buffers()[0] != nil {
+		bitmap = input.Buffers()[0].Bytes()
+	}
+	unit := input.DataType().(*arrow.Time32Type).Unit
+	bitutils.VisitBitBlocks(bitmap, int64(input.Offset()), int64(input.Len()),
+		func(pos int64) {
+			bldr.AppendString(vals[pos].FormattedString(unit))
+		}, func() {
+			bldr.AppendNull()
+		})
+}
+
+func time64ToString(bldr *array.BinaryBuilder, input arrow.ArrayData) {
+	vals := getVals[arrow.Time64](input, 1)
+	var bitmap []byte
+	if input.Buffers()[0] != nil {
+		bitmap = input.Buffers()[0].Bytes()
+	}
+	unit := input.DataType().(*arrow.Time64Type).Unit
+	bitutils.VisitBitBlocks(bitmap, int64(input.Offset()), int64(input.Len()),
+		func(pos int64) {
+			bldr.AppendString(vals[pos].FormattedString(unit))
+		}, func() {
+			bldr.AppendNull()
+		})
+}
+
+func numericToStringSigned[T constraints.Signed](bldr *array.BinaryBuilder, input arrow.ArrayData) {
+	vals := getVals[T](input, 1)
+	var bitmap []byte
+	if input.Buffers()[0] != nil {
+		bitmap = input.Buffers()[0].Bytes()
+	}
+	bitutils.VisitBitBlocks(bitmap, int64(input.Offset()), int64(input.Len()),
+		func(pos int64) {
+			bldr.AppendString(strconv.FormatInt(int64(vals[pos]), 10))
+		}, func() {
+			bldr.AppendNull()
+		})
+}
+
+func numericToStringUnsigned[T constraints.Unsigned](bldr *array.BinaryBuilder, input arrow.ArrayData) {
+	vals := getVals[T](input, 1)
+	var bitmap []byte
+	if input.Buffers()[0] != nil {
+		bitmap = input.Buffers()[0].Bytes()
+	}
+	bitutils.VisitBitBlocks(bitmap, int64(input.Offset()), int64(input.Len()),
+		func(pos int64) {
+			bldr.AppendString(strconv.FormatUint(uint64(vals[pos]), 10))
+		}, func() {
+			bldr.AppendNull()
+		})
+}
+
+func numericToStringFloat[T constraints.Float](bldr *array.BinaryBuilder, input arrow.ArrayData) {
+	vals := getVals[T](input, 1)
+	var bitmap []byte
+	if input.Buffers()[0] != nil {
+		bitmap = input.Buffers()[0].Bytes()
+	}
+	bitsize := 32
+	if input.DataType().ID() == arrow.FLOAT64 {
+		bitsize = 64
+	}
+	bitutils.VisitBitBlocks(bitmap, int64(input.Offset()), int64(input.Len()),
+		func(pos int64) {
+			bldr.AppendString(strconv.FormatFloat(float64(vals[pos]), 'g', -1, bitsize))
+		}, func() {
+			bldr.AppendNull()
+		})
+}
+
+func numericToStringBool(bldr *array.BinaryBuilder, input arrow.ArrayData) {
+	offset := input.Offset()
+	data := input.Buffers()[1].Bytes()
+	var bitmap []byte
+	if input.Buffers()[0] != nil {
+		bitmap = input.Buffers()[0].Bytes()
+	}
+	bitutils.VisitBitBlocks(bitmap, int64(input.Offset()), int64(input.Len()),
+		func(pos int64) {
+			bldr.AppendString(strconv.FormatBool(bitutil.BitIsSet(data, offset+int(pos))))
+		}, func() { bldr.AppendNull() })
+}
+
+func GenerateNumericToString(typ arrow.Type) functions.ArrayKernelExec {
+	var runfn func(*array.BinaryBuilder, arrow.ArrayData)
+
+	switch typ {
+	case arrow.BOOL:
+		runfn = numericToStringBool
+	case arrow.INT8:
+		runfn = numericToStringSigned[int8]
+	case arrow.INT16:
+		runfn = numericToStringSigned[int16]
+	case arrow.INT32:
+		runfn = numericToStringSigned[int32]
+	case arrow.INT64:
+		runfn = numericToStringSigned[int64]
+	case arrow.UINT8:
+		runfn = numericToStringUnsigned[uint8]
+	case arrow.UINT16:
+		runfn = numericToStringUnsigned[uint16]
+	case arrow.UINT32:
+		runfn = numericToStringUnsigned[uint32]
+	case arrow.UINT64:
+		runfn = numericToStringUnsigned[uint64]
+	case arrow.FLOAT32:
+		runfn = numericToStringFloat[float32]
+	case arrow.FLOAT64:
+		runfn = numericToStringFloat[float64]
+	case arrow.DATE32:
+		runfn = date32ToString
+	case arrow.DATE64:
+		runfn = date64ToString
+	case arrow.TIME32:
+		runfn = time32ToString
+	case arrow.TIME64:
+		runfn = time64ToString
+	}
+
+	return func(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+		input := batch.Values[0].(*compute.ArrayDatum).Value
+		output := out.(*compute.ArrayDatum).Value
+
+		bldr := array.NewBinaryBuilder(ctx.Ctx.Mem, output.DataType().(arrow.BinaryDataType))
+		defer bldr.Release()
+
+		runfn(bldr, input)
+
+		result := bldr.NewArray()
+		defer result.Release()
+		output.Reset(result.DataType(), result.Len(), result.Data().Buffers(), nil, result.NullN(), result.Data().Offset())
+		return nil
+	}
+}
+
+func CastTimestampToString(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+	input := batch.Values[0].(*compute.ArrayDatum).Value
+	output := out.(*compute.ArrayDatum).Value
+
+	bldr := array.NewBinaryBuilder(ctx.Ctx.Mem, output.DataType().(arrow.BinaryDataType))
+	defer bldr.Release()
+
+	inputType := input.DataType().(*arrow.TimestampType)
+	toTime, err := inputType.GetToTimeFunc()
+	if err != nil {
+		return err
+	}
+
+	// prealloc
+	fmtstring := "2006-01-02 15:04:05"
+	switch inputType.Unit {
+	case arrow.Millisecond:
+		fmtstring += ".000"
+	case arrow.Microsecond:
+		fmtstring += ".000000"
+	case arrow.Nanosecond:
+		fmtstring += ".000000000"
+	}
+
+	switch inputType.TimeZone {
+	case "UTC":
+		fmtstring += "Z"
+	case "":
+	default:
+		fmtstring += "-0700"
+	}
+
+	strlen := len(fmtstring)
+	bldr.Reserve(input.Len())
+	bldr.ReserveData((input.Len() - input.NullN()) * strlen)
+
+	vals := getVals[arrow.Timestamp](input, 1)
+	var bitmap []byte
+	if input.Buffers()[0] != nil {
+		bitmap = input.Buffers()[0].Bytes()
+	}
+	bitutils.VisitBitBlocks(bitmap, int64(input.Offset()), int64(input.Len()),
+		func(pos int64) {
+			bldr.AppendString(toTime(vals[pos]).Format(fmtstring))
+		}, func() { bldr.AppendNull() })
+
+	result := bldr.NewArray()
+	defer result.Release()
+	output.Reset(result.DataType(), result.Len(), result.Data().Buffers(), nil, result.NullN(), result.Data().Offset())
+	return nil
 }

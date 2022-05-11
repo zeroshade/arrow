@@ -19,12 +19,14 @@ package internal
 import (
 	"fmt"
 	"math"
+	"unicode/utf8"
 
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/bitutil"
 	"github.com/apache/arrow/go/v9/arrow/compute"
 	"github.com/apache/arrow/go/v9/arrow/compute/exec/functions"
 	"github.com/apache/arrow/go/v9/arrow/decimal128"
+	"github.com/apache/arrow/go/v9/arrow/internal/debug"
 	"github.com/apache/arrow/go/v9/arrow/scalar"
 	"github.com/apache/arrow/go/v9/internal/bitutils"
 	"golang.org/x/exp/constraints"
@@ -152,7 +154,12 @@ func scalarUnaryNotNullStateful[OutType primitive | decimal128.Num, Arg0Type pri
 				def      OutType
 				err      error
 			)
-			bitutils.VisitBitBlocks(arg0.Buffers()[0].Bytes(), int64(arg0.Offset()), int64(arg0.Len()),
+			var bitmap []byte
+			if arg0.Buffers()[0] != nil {
+				bitmap = arg0.Buffers()[0].Bytes()
+			}
+
+			bitutils.VisitBitBlocks(bitmap, int64(arg0.Offset()), int64(arg0.Len()),
 				func(pos int64) {
 					outData[outPos] = op(ctx, arg0Data[pos], &err)
 					outPos++
@@ -175,6 +182,55 @@ func scalarUnaryNotNullStateful[OutType primitive | decimal128.Num, Arg0Type pri
 	}
 }
 
+var emptyData = []byte{0}
+
+func ValidateUtf8FixedSizeBinary(data arrow.ArrayData) error {
+	debug.Assert(data.DataType().ID() == arrow.FIXED_SIZE_BINARY, "validateUtf8FixedSizeBinary expects a fixed sized binary type")
+	width := int64(data.DataType().(*arrow.FixedSizeBinaryType).ByteWidth)
+	var bitmap []byte
+	if data.Buffers()[0] != nil {
+		bitmap = data.Buffers()[0].Bytes()
+	}
+
+	rawData := data.Buffers()[1].Bytes()
+
+	return bitutils.VisitBitBlocksShort(bitmap, int64(data.Offset()), int64(data.Len()),
+		func(pos int64) error {
+			pos += int64(data.Offset())
+			beg := pos * width
+			end := (pos + 1) * width
+			if !utf8.Valid(rawData[beg:end]) {
+				return fmt.Errorf("%w: invalid utf8 bytes %x", compute.ErrInvalid, rawData[beg:end])
+			}
+			return nil
+		}, func() error { return nil })
+}
+
+func ValidateUtf8Binary(data arrow.ArrayData) error {
+	debug.Assert(data.DataType().ID() == arrow.BINARY || data.DataType().ID() == arrow.STRING, "validateutf8binary expects a variable length binary type")
+	offsets := reinterpret[int32](data.Buffers()[1].Bytes())[data.Offset() : data.Offset()+data.Len()+1]
+	var inputData []byte
+	if data.Buffers()[2] != nil {
+		inputData = data.Buffers()[2].Bytes()
+	} else {
+		inputData = emptyData
+	}
+	var bitmap []byte
+	if data.Buffers()[0] != nil {
+		bitmap = data.Buffers()[0].Bytes()
+	}
+	return bitutils.VisitBitBlocksShort(bitmap, int64(data.Offset()), int64(data.Len()),
+		func(pos int64) error {
+			v := inputData[offsets[pos]:offsets[pos+1]]
+			if !utf8.Valid(v) {
+				return fmt.Errorf("%w: invalid UTF8 bytes: %x", compute.ErrInvalid, v)
+			}
+			return nil
+		}, func() error {
+			return nil
+		})
+}
+
 func scalarUnaryNotNullStatefulBinaryArg[OutType primitive | decimal128.Num](op func(*functions.KernelCtx, []byte, *error) OutType) functions.ArrayKernelExec {
 	return func(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
 		if batch.Values[0].Kind() == compute.KindArray {
@@ -183,12 +239,22 @@ func scalarUnaryNotNullStatefulBinaryArg[OutType primitive | decimal128.Num](op 
 				outData     = getVals[OutType](outArr, 1)
 				outPos      = 0
 				arg0        = batch.Values[0].(*compute.ArrayDatum).Value
-				arg0Offsets = reinterpret[int32](arg0.Buffers()[2].Bytes())[arg0.Offset() : arg0.Offset()+arg0.Len()+1]
-				arg0Data    = arg0.Buffers()[2].Bytes()
+				arg0Offsets = reinterpret[int32](arg0.Buffers()[1].Bytes())[arg0.Offset() : arg0.Offset()+arg0.Len()+1]
 				def         OutType
 				err         error
+				arg0Data    []byte
 			)
-			bitutils.VisitBitBlocks(arg0.Buffers()[0].Bytes(), int64(arg0.Offset()), int64(arg0.Len()),
+			if arg0.Buffers()[2] != nil {
+				arg0Data = arg0.Buffers()[2].Bytes()
+			} else {
+				arg0Data = emptyData
+			}
+			var bitmap []byte
+			if arg0.Buffers()[0] != nil {
+				bitmap = arg0.Buffers()[0].Bytes()
+			}
+
+			bitutils.VisitBitBlocks(bitmap, int64(arg0.Offset()), int64(arg0.Len()),
 				func(pos int64) {
 					v := arg0Data[arg0Offsets[pos]:arg0Offsets[pos+1]]
 					outData[outPos] = op(ctx, v, &err)

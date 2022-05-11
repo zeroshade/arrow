@@ -67,3 +67,9 @@ func trivialScalarUnaryAsArrayExec(kernelExec functions.ArrayKernelExec, hndl fu
 		return nil
 	}
 }
+
+func firstType(_ *functions.KernelCtx, descrs []compute.ValueDescr) (compute.ValueDescr, error) {
+	result := descrs[0]
+	result.Shape = compute.GetBroadcastShape(descrs)
+	return result, nil
+}

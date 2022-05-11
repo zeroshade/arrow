@@ -63,6 +63,7 @@ var (
 		arrow.BinaryTypes.Binary,
 		arrow.BinaryTypes.String,
 	}
+	numericTypes = append(append(intTypes, floatingTypes...), arrow.FixedWidthTypes.Boolean)
 )
 
 func canCastFromDictionary(id arrow.Type) bool {

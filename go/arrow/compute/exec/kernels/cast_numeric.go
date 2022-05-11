@@ -38,7 +38,7 @@ func addCommonNumberCasts[T constraints.Integer | constraints.Float](out arrow.D
 	debug.Assert(err == nil, "failed adding bool number cast kernel")
 
 	for _, in := range baseBinaryTypes {
-		err = fn.AddNewKernel(in.ID(), []functions.InputType{functions.NewExactInput(in, compute.ShapeAny)}, outtype, nil, functions.NullIntersection, functions.MemPrealloc)
+		err = fn.AddNewKernel(in.ID(), []functions.InputType{functions.NewExactInput(in, compute.ShapeAny)}, outtype, internal.GetParseStringExec(out.ID()), functions.NullIntersection, functions.MemPrealloc)
 		debug.Assert(err == nil, "failed adding basebinary cast kernel")
 	}
 }

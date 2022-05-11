@@ -51,6 +51,7 @@ func initCastTable() {
 		castTable = make(map[arrow.Type]*CastFunction)
 		addCastFuncs(getNumericCasts())
 		addCastFuncs(getTemporalCasts())
+		addCastFuncs(getBinaryLikeCasts())
 	})
 }
 

@@ -168,6 +168,9 @@ func getTimestampCast() CastFunction {
 			return internal.ShiftTime[int32, int64](ctx, op, factor, batch.Values[0].(*compute.ArrayDatum).Value, out.(*compute.ArrayDatum).Value)
 		}, functions.NullIntersection), functions.NullIntersection, functions.MemPrealloc)
 
+	fn.AddNewKernel(arrow.TIMESTAMP, []functions.InputType{functions.NewExactInput(arrow.BinaryTypes.String, compute.ShapeAny)}, outputTargetType,
+		trivialScalarUnaryAsArrayExec(internal.StringToTimestamp, functions.NullIntersection), functions.NullIntersection, functions.MemPrealloc)
+
 	kernel := functions.NewScalarKernelWithSig(
 		functions.NewKernelSig([]functions.InputType{functions.NewInputIDType(arrow.TIMESTAMP)}, outputTargetType, false),
 		trivialScalarUnaryAsArrayExec(internal.SimpleTemporalCast[arrow.Timestamp, arrow.Timestamp], functions.NullIntersection), nil)
