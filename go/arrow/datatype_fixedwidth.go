@@ -74,7 +74,7 @@ func Date32FromTime(t time.Time) Date32 {
 }
 
 func (d Date32) ToTime() time.Time {
-	return time.Unix(0, 0).AddDate(0, 0, int(d))
+	return time.Unix(0, 0).UTC().AddDate(0, 0, int(d))
 }
 
 // Date64FromTime returns a Date64 value from a time object

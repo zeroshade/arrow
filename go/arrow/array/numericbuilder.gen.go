@@ -2822,7 +2822,7 @@ func (b *Date32Builder) unmarshalOne(dec *json.Decoder) error {
 	case nil:
 		b.AppendNull()
 	case string:
-		tm, err := time.Parse("2006-01-02", v)
+		tm, err := time.ParseInLocation("2006-01-02", v, time.UTC)
 		if err != nil {
 			return &json.UnmarshalTypeError{
 				Value:  v,

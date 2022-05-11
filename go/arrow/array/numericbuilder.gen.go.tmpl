@@ -186,7 +186,7 @@ func (b *{{.Name}}Builder) unmarshalOne(dec *json.Decoder) error {
 		b.AppendNull()
 {{if or (eq .Name "Date32") (eq .Name "Date64") -}}
 	case string:
-		tm, err := time.Parse("2006-01-02", v)
+		tm, err := time.ParseInLocation("2006-01-02", v, time.UTC)
 		if err != nil {
 			return &json.UnmarshalTypeError{
 				Value: v,
