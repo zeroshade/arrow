@@ -367,6 +367,16 @@ func (c *Call) IsBound() bool {
 		return false
 	}
 
+	if c.Kernel == nil {
+		return false
+	}
+
+	for _, a := range c.args {
+		if !a.IsBound() {
+			return false
+		}
+	}
+
 	return true
 }
 
