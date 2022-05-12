@@ -106,7 +106,7 @@ func bindNonRecurse(ectx *compute.ExecCtx, call *compute.Call, insertImplicitCas
 	return call, err
 }
 
-func bindImpl(ectx *compute.ExecCtx, expr compute.Expression, sc *arrow.Schema, shape compute.ValueShape) (compute.Expression, error) {
+func bindImplSchema(ectx *compute.ExecCtx, expr compute.Expression, sc *arrow.Schema, shape compute.ValueShape) (compute.Expression, error) {
 	switch ex := expr.(type) {
 	case *compute.Literal:
 		return expr, nil
@@ -128,7 +128,7 @@ func bindImpl(ectx *compute.ExecCtx, expr compute.Expression, sc *arrow.Schema, 
 		boundArgs := make([]compute.Expression, len(args))
 		var err error
 		for i, arg := range args {
-			if boundArgs[i], err = bindImpl(ectx, arg, sc, shape); err != nil {
+			if boundArgs[i], err = bindImplSchema(ectx, arg, sc, shape); err != nil {
 				return nil, err
 			}
 		}
@@ -142,5 +142,44 @@ func BindSchema(ctx context.Context, expr compute.Expression, sc *arrow.Schema) 
 	if ectx == nil {
 		ectx = DefaultExecCtx()
 	}
-	return bindImpl(ectx, expr, sc, compute.ShapeArray)
+	return bindImplSchema(ectx, expr, sc, compute.ShapeArray)
+}
+
+func bindImplType(ectx *compute.ExecCtx, expr compute.Expression, dt arrow.DataType, shape compute.ValueShape) (compute.Expression, error) {
+	switch ex := expr.(type) {
+	case *compute.Literal:
+		return expr, nil
+	case *compute.Parameter:
+		ref := ex.FieldRef()
+		path, err := ref.FindOneInType(dt)
+		if err != nil {
+			return nil, err
+		}
+
+		field, err := path.GetFieldFromType(dt)
+		if err != nil {
+			return nil, err
+		}
+
+		return compute.NewBoundRef(ref, path, compute.ValueDescr{Shape: shape, Type: field.Type}), nil
+	case *compute.Call:
+		args := ex.Args()
+		boundArgs := make([]compute.Expression, len(args))
+		var err error
+		for i, arg := range args {
+			if boundArgs[i], err = bindImplType(ectx, arg, dt, shape); err != nil {
+				return nil, err
+			}
+		}
+		return bindNonRecurse(ectx, compute.NewCall(ex.FunctionName(), boundArgs, ex.Options()), true)
+	}
+	return nil, fmt.Errorf("%w bad expression type", compute.ErrInvalid)
+}
+
+func BindType(ctx context.Context, expr compute.Expression, descr compute.ValueDescr) (compute.Expression, error) {
+	ectx := compute.GetExecCtx(ctx)
+	if ectx == nil {
+		ectx = DefaultExecCtx()
+	}
+	return bindImplType(ectx, expr, descr.Type, descr.Shape)
 }
