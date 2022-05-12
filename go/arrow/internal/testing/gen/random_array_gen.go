@@ -41,6 +41,8 @@ func NewRandomArrayGenerator(seed uint64, mem memory.Allocator) RandomArrayGener
 	return RandomArrayGenerator{seed, 0, src, rand.New(src), mem}
 }
 
+func (r *RandomArrayGenerator) Alloc() memory.Allocator { return r.mem }
+
 // GenerateBitmap generates a bitmap of n bits and stores it into buffer. Prob is the probability
 // that a given bit will be zero, with 1-prob being the probability it will be 1. The return value
 // is the number of bits that were left unset. The assumption being that buffer is currently

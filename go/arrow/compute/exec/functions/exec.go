@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
@@ -33,7 +34,21 @@ import (
 
 var (
 	ErrNotImplemented = errors.New("not yet implemented")
+
+	ebiPool  = sync.Pool{New: func() any { return &execBatchIterator{} }}
+	execPool = sync.Pool{New: func() any {
+		return &execSupport{
+			output: make([]compute.Datum, 0)}
+	}}
 )
+
+type execSupport struct {
+	inputDescrs []compute.ValueDescr
+	kctx        compute.KernelCtx
+	initArgs    compute.KernelInitArgs
+	sexec       scalarExecutor
+	output      []compute.Datum
+}
 
 type execBatchIterator struct {
 	args         []compute.Datum
@@ -63,13 +78,24 @@ func createExecBatchIterator(args []compute.Datum, maxChunksize int64) (*execBat
 	}
 
 	maxChunksize = utils.Min(utils.Max(1, maxChunksize), length)
-	return &execBatchIterator{
-		args:         args,
-		length:       length,
-		maxChunksize: maxChunksize,
-		chunkIdxes:   make([]int, len(args)),
-		chunkPos:     make([]int64, len(args)),
-	}, nil
+	ebi := ebiPool.Get().(*execBatchIterator)
+	ebi.maxChunksize, ebi.args, ebi.length = maxChunksize, args, length
+	if cap(ebi.chunkIdxes) < len(args) {
+		ebi.chunkIdxes = make([]int, len(args))
+	}
+	ebi.chunkIdxes = ebi.chunkIdxes[:len(args)]
+	if cap(ebi.chunkPos) < len(args) {
+		ebi.chunkPos = make([]int64, len(args))
+	}
+	ebi.chunkPos = ebi.chunkPos[:len(args)]
+	return ebi, nil
+}
+
+func putIteratorBack(ebi *execBatchIterator) {
+	ebi.args = nil
+	ebi.chunkIdxes = ebi.chunkIdxes[:0]
+	ebi.chunkPos = ebi.chunkPos[:0]
+	ebiPool.Put(ebi)
 }
 
 func (ebi *execBatchIterator) next(batch *compute.ExecBatch) bool {
@@ -207,6 +233,10 @@ func computeDataPrealloc(dt arrow.DataType, widths []bufferPrealloc) []bufferPre
 	return widths
 }
 
+var nullPropPool = sync.Pool{
+	New: func() any { return &nullPropagator{} },
+}
+
 type nullPropagator struct {
 	ctx            *compute.KernelCtx
 	batch          *compute.ExecBatch
@@ -217,8 +247,13 @@ type nullPropagator struct {
 	preallocBitmap bool
 }
 
-func newNullPropagator(ctx *compute.KernelCtx, batch *compute.ExecBatch, out *array.Data) nullPropagator {
-	np := nullPropagator{ctx: ctx, batch: batch, out: out, arrsWithNulls: []arrow.ArrayData{}}
+func newNullPropagator(ctx *compute.KernelCtx, batch *compute.ExecBatch, out *array.Data) *nullPropagator {
+	np := nullPropPool.Get().(*nullPropagator)
+	np.ctx = ctx
+	np.batch = batch
+	np.out = out
+	np.preallocBitmap = false
+
 	for _, d := range batch.Values {
 		ng := getNullGeneralized(d)
 		if ng == nullsAllNull {
@@ -233,6 +268,14 @@ func newNullPropagator(ctx *compute.KernelCtx, batch *compute.ExecBatch, out *ar
 		np.bitmap = np.out.Buffers()[0].Bytes()
 	}
 	return np
+}
+
+func putNullProp(np *nullPropagator) {
+	np.ctx = nil
+	np.batch = nil
+	np.arrsWithNulls = np.arrsWithNulls[:0]
+	np.bitmap = nil
+	nullPropPool.Put(np)
 }
 
 func (np *nullPropagator) ensureAllocated() {
@@ -376,6 +419,7 @@ func propagateNulls(ctx *compute.KernelCtx, batch *compute.ExecBatch, out *array
 	}
 	np := newNullPropagator(ctx, batch, out)
 	np.execute()
+	putNullProp(np)
 	return nil
 }
 
@@ -402,6 +446,8 @@ func toChunkedArray(values []compute.Datum, dt arrow.DataType) *arrow.Chunked {
 	return arrow.NewChunked(dt, arrs)
 }
 
+var emptyExecCtx compute.ExecCtx
+
 func ExecuteFunction(ctx context.Context, fn compute.Function, args []compute.Datum, opts compute.FunctionOptions) (compute.Datum, error) {
 	if ef, ok := fn.(ExecutableFunc); ok {
 		return ef.Execute(ctx, args, opts)
@@ -415,14 +461,29 @@ func ExecuteFunction(ctx context.Context, fn compute.Function, args []compute.Da
 	}
 	ectx := compute.GetExecCtx(ctx)
 	if ectx == nil {
-		var ectx compute.ExecCtx
-		return ExecuteFunction(compute.SetExecCtx(ctx, &ectx), fn, args, opts)
+		ectx = &emptyExecCtx
 	}
+	return executeFunctionImpl(ectx, fn, args, opts)
+}
+
+func executeFunctionImpl(ectx *compute.ExecCtx, fn compute.Function, args []compute.Datum, opts compute.FunctionOptions) (compute.Datum, error) {
 	if err := checkAllValues(args); err != nil {
 		return nil, err
 	}
 
-	inputDescrs := make([]compute.ValueDescr, len(args))
+	ep := execPool.Get().(*execSupport)
+	defer func() {
+		ep.inputDescrs = ep.inputDescrs[:0]
+		ep.kctx.State = nil
+		ep.output = ep.output[:0]
+		execPool.Put(ep)
+	}()
+
+	if cap(ep.inputDescrs) < len(args) {
+		ep.inputDescrs = make([]compute.ValueDescr, len(args))
+	}
+
+	inputDescrs := ep.inputDescrs[:len(args)]
 	for i, a := range args {
 		inputDescrs[i] = a.(compute.ArrayLikeDatum).Descr()
 	}
@@ -433,12 +494,14 @@ func ExecuteFunction(ctx context.Context, fn compute.Function, args []compute.Da
 	}
 
 	// implicitly cast args! TODO
+	ep.kctx.Ctx = ectx
+	ep.initArgs.Kernel = kernel
+	ep.initArgs.Inputs = inputDescrs
+	ep.initArgs.Options = opts
 
-	kernelCtx := compute.KernelCtx{Ctx: ectx}
-	initArgs := compute.KernelInitArgs{Kernel: kernel, Inputs: inputDescrs, Options: opts}
 	init := kernel.GetInit()
 	if init != nil {
-		kernelCtx.State, err = init(&kernelCtx, initArgs)
+		ep.kctx.State, err = init(&ep.kctx, ep.initArgs)
 		if err != nil {
 			return nil, err
 		}
@@ -447,8 +510,7 @@ func ExecuteFunction(ctx context.Context, fn compute.Function, args []compute.Da
 	var executor kernelExecutor
 	switch fn.Kind() {
 	case compute.FuncScalarKind:
-		var sexec scalarExecutor
-		executor = &sexec
+		executor = &ep.sexec
 	case compute.FuncVectorKind:
 		return nil, errors.New("vector functions not implemented")
 	case compute.FuncScalarAggKind:
@@ -459,17 +521,16 @@ func ExecuteFunction(ctx context.Context, fn compute.Function, args []compute.Da
 		return nil, errors.New("invalid function type")
 	}
 
-	if err := executor.init(&kernelCtx, initArgs); err != nil {
+	if err := executor.init(&ep.kctx, ep.initArgs); err != nil {
 		return nil, err
 	}
 
 	ch := make(chan compute.Datum)
 	done := make(chan bool)
-	output := make([]compute.Datum, 0)
 	go func() {
 		defer close(done)
 		for d := range ch {
-			output = append(output, d)
+			ep.output = append(ep.output, d)
 		}
 	}()
 
@@ -480,7 +541,7 @@ func ExecuteFunction(ctx context.Context, fn compute.Function, args []compute.Da
 	}
 
 	<-done
-	final := executor.wrapResults(args, output)
+	final := executor.wrapResults(args, ep.output)
 	return final, nil
 }
 
@@ -511,7 +572,11 @@ func (b *baseKernelExec) init(ctx *compute.KernelCtx, args compute.KernelInitArg
 	b.ctx = ctx
 	b.kernel = args.Kernel
 	b.outDescr, err = b.kernel.GetSignature().OutputType().Resolve(b.ctx, args.Inputs)
-	b.dataPrealloc = []bufferPrealloc{}
+	if b.dataPrealloc == nil {
+		b.dataPrealloc = []bufferPrealloc{}
+	} else {
+		b.dataPrealloc = b.dataPrealloc[:0]
+	}
 	return
 }
 
@@ -667,6 +732,7 @@ func (s *scalarExecutor) execute(args []compute.Datum, out chan<- compute.Datum)
 	if err := s.prepareExecute(args); err != nil {
 		return err
 	}
+	defer putIteratorBack(s.batchIterator)
 	var batch compute.ExecBatch
 	for s.batchIterator.next(&batch) {
 		if err := s.executeBatch(&batch, out); err != nil {

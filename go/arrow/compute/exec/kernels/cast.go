@@ -125,7 +125,7 @@ func (c *CastFunction) DispatchExact(vals []compute.ValueDescr) (compute.Kernel,
 		return nil, err
 	}
 
-	candidates := make([]*functions.ScalarKernel, 0)
+	candidates := make([]*functions.ScalarKernel, 0, 1)
 	kernels := c.Kernels()
 	for i, k := range kernels {
 		if k.Signature.MatchesInputs(vals) {
