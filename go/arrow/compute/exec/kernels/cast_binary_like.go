@@ -28,7 +28,7 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/memory"
 )
 
-func fsbToFsb(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func fsbToFsb(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	options := ctx.State.(*compute.CastOptions)
 	input := batch.Values[0].(*compute.ArrayDatum).Value
 	inputWidth := input.DataType().(*arrow.FixedSizeBinaryType).ByteWidth
@@ -40,7 +40,7 @@ func fsbToFsb(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.
 	return internal.ZeroCopyCastExec(ctx, batch, out)
 }
 
-func binaryToBinary(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func binaryToBinary(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	options := ctx.State.(*compute.CastOptions)
 	input := batch.Values[0].(*compute.ArrayDatum).Value
 
@@ -54,7 +54,7 @@ func binaryToBinary(ctx *functions.KernelCtx, batch *functions.ExecBatch, out co
 	return internal.ZeroCopyCastExec(ctx, batch, out)
 }
 
-func fsbToBinary(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func fsbToBinary(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	options := ctx.State.(*compute.CastOptions)
 	input := batch.Values[0].(*compute.ArrayDatum).Value
 	outarr := out.(*compute.ArrayDatum).Value
@@ -93,35 +93,35 @@ func fsbToBinary(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compu
 	return nil
 }
 
-func addNumberStringCasts(fn *CastFunction, outType functions.OutputType) {
-	fn.AddNewKernel(arrow.BOOL, []functions.InputType{functions.NewExactInput(arrow.FixedWidthTypes.Boolean, compute.ShapeAny)}, outType,
-		trivialScalarUnaryAsArrayExec(internal.GenerateNumericToString(arrow.BOOL), functions.NullComputeNoPrealloc),
-		functions.NullIntersection, functions.MemNoPrealloc)
+func addNumberStringCasts(fn *CastFunction, outType compute.OutputType) {
+	fn.AddNewKernel(arrow.BOOL, []compute.InputType{compute.NewExactInput(arrow.FixedWidthTypes.Boolean, compute.ShapeAny)}, outType,
+		trivialScalarUnaryAsArrayExec(internal.GenerateNumericToString(arrow.BOOL), compute.NullComputeNoPrealloc),
+		compute.NullIntersection, compute.MemNoPrealloc)
 
 	for _, intyp := range numericTypes {
-		fn.AddNewKernel(intyp.ID(), []functions.InputType{functions.NewExactInput(intyp, compute.ShapeAny)}, outType,
-			trivialScalarUnaryAsArrayExec(internal.GenerateNumericToString(intyp.ID()), functions.NullComputeNoPrealloc),
-			functions.NullIntersection, functions.MemNoPrealloc)
+		fn.AddNewKernel(intyp.ID(), []compute.InputType{compute.NewExactInput(intyp, compute.ShapeAny)}, outType,
+			trivialScalarUnaryAsArrayExec(internal.GenerateNumericToString(intyp.ID()), compute.NullComputeNoPrealloc),
+			compute.NullIntersection, compute.MemNoPrealloc)
 	}
 }
 
-func addTemporalToStringCasts(fn *CastFunction, outType functions.OutputType) {
-	fn.AddNewKernel(arrow.TIMESTAMP, []functions.InputType{functions.NewInputIDType(arrow.TIMESTAMP)}, outType,
-		trivialScalarUnaryAsArrayExec(internal.CastTimestampToString, functions.NullComputeNoPrealloc),
-		functions.NullIntersection, functions.MemNoPrealloc)
+func addTemporalToStringCasts(fn *CastFunction, outType compute.OutputType) {
+	fn.AddNewKernel(arrow.TIMESTAMP, []compute.InputType{compute.NewInputIDType(arrow.TIMESTAMP)}, outType,
+		trivialScalarUnaryAsArrayExec(internal.CastTimestampToString, compute.NullComputeNoPrealloc),
+		compute.NullIntersection, compute.MemNoPrealloc)
 	for _, inType := range []arrow.Type{arrow.DATE32, arrow.DATE64, arrow.TIME32, arrow.TIME64} {
-		fn.AddNewKernel(inType, []functions.InputType{functions.NewInputIDType(inType)}, outType,
-			trivialScalarUnaryAsArrayExec(internal.GenerateNumericToString(inType), functions.NullComputeNoPrealloc),
-			functions.NullIntersection, functions.MemPrealloc)
+		fn.AddNewKernel(inType, []compute.InputType{compute.NewInputIDType(inType)}, outType,
+			trivialScalarUnaryAsArrayExec(internal.GenerateNumericToString(inType), compute.NullComputeNoPrealloc),
+			compute.NullIntersection, compute.MemPrealloc)
 	}
 }
 
-func addBinaryCast(fn *CastFunction, exec functions.ArrayKernelExec, outType functions.OutputType, inType arrow.Type) {
-	fn.AddNewKernel(inType, []functions.InputType{functions.NewInputIDType(inType)}, outType,
-		trivialScalarUnaryAsArrayExec(exec, functions.NullComputeNoPrealloc), functions.NullIntersection, functions.MemPrealloc)
+func addBinaryCast(fn *CastFunction, exec functions.ArrayKernelExec, outType compute.OutputType, inType arrow.Type) {
+	fn.AddNewKernel(inType, []compute.InputType{compute.NewInputIDType(inType)}, outType,
+		trivialScalarUnaryAsArrayExec(exec, compute.NullComputeNoPrealloc), compute.NullIntersection, compute.MemPrealloc)
 }
 
-func addBinaryToBinaryCast(fn *CastFunction, outType functions.OutputType) {
+func addBinaryToBinaryCast(fn *CastFunction, outType compute.OutputType) {
 	addBinaryCast(fn, binaryToBinary, outType, arrow.STRING)
 	addBinaryCast(fn, binaryToBinary, outType, arrow.BINARY)
 	addBinaryCast(fn, fsbToBinary, outType, arrow.FIXED_SIZE_BINARY)
@@ -129,23 +129,23 @@ func addBinaryToBinaryCast(fn *CastFunction, outType functions.OutputType) {
 
 func getBinaryLikeCasts() (out []CastFunction) {
 	castBinary := NewCastFunction("cast_binary", arrow.BINARY)
-	binOut := functions.NewOutputType(arrow.BinaryTypes.Binary)
+	binOut := compute.NewOutputType(arrow.BinaryTypes.Binary)
 	addCommonCasts(arrow.BINARY, binOut, &castBinary)
 	addBinaryToBinaryCast(&castBinary, binOut)
 
 	castString := NewCastFunction("cast_string", arrow.STRING)
-	strOut := functions.NewOutputType(arrow.BinaryTypes.String)
+	strOut := compute.NewOutputType(arrow.BinaryTypes.String)
 	addCommonCasts(arrow.STRING, strOut, &castString)
 	addBinaryToBinaryCast(&castString, strOut)
 	addNumberStringCasts(&castString, strOut)
 	addTemporalToStringCasts(&castString, strOut)
 
 	castFSB := NewCastFunction("cast_fixed_size_binary", arrow.FIXED_SIZE_BINARY)
-	fsbOut := functions.NewOutputTypeResolver(resolveOutputFromOpts)
+	fsbOut := compute.NewOutputTypeResolver(resolveOutputFromOpts)
 	addCommonCasts(arrow.FIXED_SIZE_BINARY, fsbOut, &castFSB)
-	castFSB.AddNewKernel(arrow.FIXED_SIZE_BINARY, []functions.InputType{functions.NewInputIDType(arrow.FIXED_SIZE_BINARY)},
-		functions.NewOutputTypeResolver(firstType),
-		trivialScalarUnaryAsArrayExec(fsbToFsb, functions.NullComputeNoPrealloc), functions.NullIntersection, functions.MemPrealloc)
+	castFSB.AddNewKernel(arrow.FIXED_SIZE_BINARY, []compute.InputType{compute.NewInputIDType(arrow.FIXED_SIZE_BINARY)},
+		compute.NewOutputTypeResolver(firstType),
+		trivialScalarUnaryAsArrayExec(fsbToFsb, compute.NullComputeNoPrealloc), compute.NullIntersection, compute.MemPrealloc)
 
 	return []CastFunction{castBinary, castString, castFSB}
 }

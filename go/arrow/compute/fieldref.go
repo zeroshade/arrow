@@ -38,6 +38,7 @@ var (
 	ErrMultipleMatches = errors.New("multiple matches")
 	ErrNoMatch         = errors.New("no match")
 	ErrInvalid         = errors.New("field ref invalid")
+	ErrNotImplemented  = errors.New("not yet implemented")
 )
 
 func getFields(typ arrow.DataType) []arrow.Field {
@@ -532,6 +533,17 @@ func (f FieldRef) FindOneOrNone(schema *arrow.Schema) (FieldPath, error) {
 // returning an error only if there are multiple matches.
 func (f FieldRef) FindOneOrNoneRecord(root arrow.Record) (FieldPath, error) {
 	return f.FindOneOrNone(root.Schema())
+}
+
+func (f FieldRef) FindOneInType(typ arrow.DataType) (FieldPath, error) {
+	matches := f.FindAllField(arrow.Field{Type: typ})
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("%w for %s in %s", ErrNoMatch, f, typ)
+	}
+	if len(matches) > 1 {
+		return nil, fmt.Errorf("%w for %s in %s", ErrMultipleMatches, f, typ)
+	}
+	return matches[0], nil
 }
 
 // FindOne returns an error if the field isn't matched or if there are multiple matches

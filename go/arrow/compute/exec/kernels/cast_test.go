@@ -63,7 +63,7 @@ var (
 	}
 )
 
-func checkScalar(t *testing.T, ctx context.Context, fn functions.Function, inputs []compute.Datum, expected compute.Datum, opts compute.FunctionOptions) {
+func checkScalar(t *testing.T, ctx context.Context, fn compute.Function, inputs []compute.Datum, expected compute.Datum, opts compute.FunctionOptions) {
 	out, err := functions.ExecuteFunction(ctx, fn, inputs, opts)
 	assert.NoError(t, err)
 	defer out.Release()
@@ -81,7 +81,7 @@ func checkScalar(t *testing.T, ctx context.Context, fn functions.Function, input
 	assert.Truef(t, expected.Equals(out), "%s(%s) = %s != %s. got: %s \n, expected: %s", fn.Name(), inputs, out, expected, outarr, exarr)
 }
 
-func checkScalarUnary(t *testing.T, ctx context.Context, fn functions.Function, input, expected compute.Datum, opts compute.FunctionOptions) {
+func checkScalarUnary(t *testing.T, ctx context.Context, fn compute.Function, input, expected compute.Datum, opts compute.FunctionOptions) {
 	checkScalar(t, ctx, fn, []compute.Datum{input}, expected, opts)
 }
 
@@ -134,9 +134,9 @@ type CastTestSuite struct {
 	suite.Suite
 
 	registry functions.FunctionRegistry
-	ectx     functions.ExecCtx
+	ectx     compute.ExecCtx
 
-	castFn functions.Function
+	castFn compute.Function
 }
 
 func (cs *CastTestSuite) SetupSuite() {
@@ -162,7 +162,7 @@ func (cs *CastTestSuite) assertBuffersSame(left, right arrow.ArrayData, buf int)
 }
 
 func (cs *CastTestSuite) runCast(input arrow.Array, options compute.CastOptions) compute.Datum {
-	ctx := functions.SetExecCtx(context.Background(), &cs.ectx)
+	ctx := compute.SetExecCtx(context.Background(), &cs.ectx)
 
 	in := compute.NewDatum(input)
 	defer in.Release()
@@ -175,7 +175,7 @@ func (cs *CastTestSuite) runCast(input arrow.Array, options compute.CastOptions)
 
 func (cs *CastTestSuite) checkCast(input, expected arrow.Array, options compute.CastOptions) {
 	options.ToType = expected.DataType()
-	ctx := functions.SetExecCtx(context.Background(), &cs.ectx)
+	ctx := compute.SetExecCtx(context.Background(), &cs.ectx)
 
 	in := compute.NewDatum(input)
 	defer in.Release()
@@ -186,7 +186,7 @@ func (cs *CastTestSuite) checkCast(input, expected arrow.Array, options compute.
 }
 
 func (cs *CastTestSuite) checkCastFails(input arrow.Array, options compute.CastOptions) {
-	ctx := functions.SetExecCtx(context.Background(), &cs.ectx)
+	ctx := compute.SetExecCtx(context.Background(), &cs.ectx)
 
 	in := compute.NewDatum(input)
 	defer in.Release()
@@ -196,7 +196,7 @@ func (cs *CastTestSuite) checkCastFails(input arrow.Array, options compute.CastO
 }
 
 func (cs *CastTestSuite) checkCastZeroCopy(input arrow.Array, toType arrow.DataType, options compute.CastOptions) {
-	ctx := functions.SetExecCtx(context.Background(), &cs.ectx)
+	ctx := compute.SetExecCtx(context.Background(), &cs.ectx)
 	in := compute.NewDatum(input)
 	defer in.Release()
 
@@ -221,7 +221,7 @@ func (cs *CastTestSuite) checkZeroCopy(from, to arrow.DataType, str string) {
 }
 
 func (cs *CastTestSuite) TestSameTypeZeroCopy() {
-	ctx := functions.SetExecCtx(context.Background(), &cs.ectx)
+	ctx := compute.SetExecCtx(context.Background(), &cs.ectx)
 	arr, _, err := array.FromJSON(cs.ectx.Mem, arrow.PrimitiveTypes.Int32, strings.NewReader(`[0, null, 2, 3, 4]`))
 	cs.NoError(err)
 	defer arr.Release()
@@ -240,7 +240,7 @@ func (cs *CastTestSuite) TestSameTypeZeroCopy() {
 }
 
 func (cs *CastTestSuite) TestCastDoesNotProvideDefaultOpts() {
-	ctx := functions.SetExecCtx(context.Background(), &cs.ectx)
+	ctx := compute.SetExecCtx(context.Background(), &cs.ectx)
 	arr, _, err := array.FromJSON(cs.ectx.Mem, arrow.PrimitiveTypes.Int32, strings.NewReader(`[0, null, 2, 3, 4]`))
 	cs.NoError(err)
 	defer arr.Release()
@@ -1596,6 +1596,12 @@ func (cs *CastTestSuite) TestIntToString() {
 
 	cs.check(arrow.PrimitiveTypes.Uint64, arrow.BinaryTypes.String,
 		`[0, 1, 18446744073709551615, null]`, `["0", "1", "18446744073709551615", null]`, *options)
+}
+
+func (cs *CastTestSuite) TestFloatingToString() {
+	options := compute.DefaultCastOptions(true)
+	cs.check(arrow.PrimitiveTypes.Float32, arrow.BinaryTypes.String,
+		`[0.0, -0.0, 1.5, null]`, `["0", "-0", "1.5", null]`, *options)
 }
 
 func (cs *CastTestSuite) TestEmptyCast() {

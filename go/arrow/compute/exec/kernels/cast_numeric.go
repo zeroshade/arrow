@@ -26,29 +26,29 @@ import (
 )
 
 func addCommonNumberCasts[T constraints.Integer | constraints.Float](out arrow.DataType, fn *CastFunction) {
-	outtype := functions.NewOutputType(out)
+	outtype := compute.NewOutputType(out)
 	addCommonCasts(out.ID(), outtype, fn)
 
-	err := fn.AddNewKernel(arrow.BOOL, []functions.InputType{functions.NewExactInput(arrow.FixedWidthTypes.Boolean, compute.ShapeAny)}, outtype, internal.ExecScalarUnaryBoolArg(func(_ *functions.KernelCtx, val bool) T {
+	err := fn.AddNewKernel(arrow.BOOL, []compute.InputType{compute.NewExactInput(arrow.FixedWidthTypes.Boolean, compute.ShapeAny)}, outtype, internal.ExecScalarUnaryBoolArg(func(_ *compute.KernelCtx, val bool) T {
 		if val {
 			return 1
 		}
 		return 0
-	}), functions.NullIntersection, functions.MemPrealloc)
+	}), compute.NullIntersection, compute.MemPrealloc)
 	debug.Assert(err == nil, "failed adding bool number cast kernel")
 
 	for _, in := range baseBinaryTypes {
-		err = fn.AddNewKernel(in.ID(), []functions.InputType{functions.NewExactInput(in, compute.ShapeAny)}, outtype, internal.GetParseStringExec(out.ID()), functions.NullIntersection, functions.MemPrealloc)
+		err = fn.AddNewKernel(in.ID(), []compute.InputType{compute.NewExactInput(in, compute.ShapeAny)}, outtype, internal.GetParseStringExec(out.ID()), compute.NullIntersection, compute.MemPrealloc)
 		debug.Assert(err == nil, "failed adding basebinary cast kernel")
 	}
 }
 
-func castFloatingToFloating(_ *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func castFloatingToFloating(_ *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	internal.CastNumberToNumberUnsafe(batch.Values[0].Type().ID(), out.Type().ID(), batch.Values[0], out)
 	return nil
 }
 
-func castIntegerToInteger(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func castIntegerToInteger(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	opts := ctx.State.(*compute.CastOptions)
 	if !opts.AllowIntOverflow {
 		if err := internal.IntsCanFit(batch.Values[0], out.Type()); err != nil {
@@ -59,7 +59,7 @@ func castIntegerToInteger(ctx *functions.KernelCtx, batch *functions.ExecBatch, 
 	return nil
 }
 
-func castIntegerToFloating(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func castIntegerToFloating(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	opts := ctx.State.(*compute.CastOptions)
 	outType := out.Type().ID()
 	if !opts.AllowFloatTruncate {
@@ -71,7 +71,7 @@ func castIntegerToFloating(ctx *functions.KernelCtx, batch *functions.ExecBatch,
 	return nil
 }
 
-func castFloatingToInteger(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func castFloatingToInteger(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	opts := ctx.State.(*compute.CastOptions)
 	internal.CastNumberToNumberUnsafe(batch.Values[0].Type().ID(), out.Type().ID(), batch.Values[0], out)
 	if !opts.AllowFloatTruncate {
@@ -84,14 +84,14 @@ func castFloatingToInteger(ctx *functions.KernelCtx, batch *functions.ExecBatch,
 
 func getCastToInt[T constraints.Integer](name string, outType arrow.DataType) CastFunction {
 	fn := NewCastFunction(name, outType.ID())
-	outputType := functions.NewOutputType(outType)
+	outputType := compute.NewOutputType(outType)
 	for _, in := range intTypes {
-		err := fn.AddNewKernel(in.ID(), []functions.InputType{functions.NewExactInput(in, compute.ShapeAny)}, outputType, castIntegerToInteger, functions.NullIntersection, functions.MemPrealloc)
+		err := fn.AddNewKernel(in.ID(), []compute.InputType{compute.NewExactInput(in, compute.ShapeAny)}, outputType, castIntegerToInteger, compute.NullIntersection, compute.MemPrealloc)
 		debug.Assert(err == nil, "failed adding cast kernel")
 	}
 
 	for _, in := range floatingTypes {
-		err := fn.AddNewKernel(in.ID(), []functions.InputType{functions.NewExactInput(in, compute.ShapeAny)}, outputType, castFloatingToInteger, functions.NullIntersection, functions.MemPrealloc)
+		err := fn.AddNewKernel(in.ID(), []compute.InputType{compute.NewExactInput(in, compute.ShapeAny)}, outputType, castFloatingToInteger, compute.NullIntersection, compute.MemPrealloc)
 		debug.Assert(err == nil, "failed adding cast kernel")
 	}
 
@@ -101,7 +101,7 @@ func getCastToInt[T constraints.Integer](name string, outType arrow.DataType) Ca
 }
 
 func addCastFromDecimal128(fn *CastFunction, outType arrow.DataType) {
-	outputType := functions.NewOutputType(outType)
+	outputType := compute.NewOutputType(outType)
 	var kn functions.ArrayKernelExec
 	switch outType.ID() {
 	case arrow.UINT8:
@@ -121,21 +121,21 @@ func addCastFromDecimal128(fn *CastFunction, outType arrow.DataType) {
 	case arrow.INT64:
 		kn = internal.CastDecimal128ToInteger[int64]
 	}
-	err := fn.AddNewKernel(arrow.DECIMAL128, []functions.InputType{functions.NewInputIDType(arrow.DECIMAL128)}, outputType, kn, functions.NullIntersection, functions.MemPrealloc)
+	err := fn.AddNewKernel(arrow.DECIMAL128, []compute.InputType{compute.NewInputIDType(arrow.DECIMAL128)}, outputType, kn, compute.NullIntersection, compute.MemPrealloc)
 	debug.Assert(err == nil, "failed adding decimal number cast kernel")
 }
 
 func getCastToFloating[T constraints.Float](name string, outType arrow.DataType) CastFunction {
 	fn := NewCastFunction(name, outType.ID())
-	outputType := functions.NewOutputType(outType)
+	outputType := compute.NewOutputType(outType)
 	// casts from integer to floats
 	for _, in := range intTypes {
-		err := fn.AddNewKernel(in.ID(), []functions.InputType{functions.NewExactInput(in, compute.ShapeAny)}, outputType, castIntegerToFloating, functions.NullIntersection, functions.MemPrealloc)
+		err := fn.AddNewKernel(in.ID(), []compute.InputType{compute.NewExactInput(in, compute.ShapeAny)}, outputType, castIntegerToFloating, compute.NullIntersection, compute.MemPrealloc)
 		debug.Assert(err == nil, "failed adding int to floating cast kernels")
 	}
 
 	for _, in := range floatingTypes {
-		err := fn.AddNewKernel(in.ID(), []functions.InputType{functions.NewExactInput(in, compute.ShapeAny)}, outputType, castFloatingToFloating, functions.NullIntersection, functions.MemPrealloc)
+		err := fn.AddNewKernel(in.ID(), []compute.InputType{compute.NewExactInput(in, compute.ShapeAny)}, outputType, castFloatingToFloating, compute.NullIntersection, compute.MemPrealloc)
 		debug.Assert(err == nil, "failed adding float to float cast kernels")
 	}
 
@@ -148,12 +148,12 @@ func getCastToFloating[T constraints.Float](name string, outType arrow.DataType)
 		exec = internal.CastDecimalToDouble
 	}
 
-	err := fn.AddNewKernel(arrow.DECIMAL128, []functions.InputType{functions.NewInputIDType(arrow.DECIMAL128)}, outputType, exec, functions.NullIntersection, functions.MemPrealloc)
+	err := fn.AddNewKernel(arrow.DECIMAL128, []compute.InputType{compute.NewInputIDType(arrow.DECIMAL128)}, outputType, exec, compute.NullIntersection, compute.MemPrealloc)
 	debug.Assert(err == nil, "failed adding decimal to float cast kernel")
 	return fn
 }
 
-var outputTargetType = functions.NewOutputTypeResolver(resolveOutputFromOpts)
+var outputTargetType = compute.NewOutputTypeResolver(resolveOutputFromOpts)
 
 func getCastToDecimal128() CastFunction {
 	outType := outputTargetType
@@ -161,9 +161,9 @@ func getCastToDecimal128() CastFunction {
 	fn := NewCastFunction("cast_decimal", arrow.DECIMAL128)
 	addCommonCasts(arrow.DECIMAL128, outType, &fn)
 
-	err := fn.AddNewKernel(arrow.FLOAT32, []functions.InputType{functions.NewExactInput(arrow.PrimitiveTypes.Float32, compute.ShapeAny)}, outType, internal.FloatToDecimal128, functions.NullIntersection, functions.MemPrealloc)
+	err := fn.AddNewKernel(arrow.FLOAT32, []compute.InputType{compute.NewExactInput(arrow.PrimitiveTypes.Float32, compute.ShapeAny)}, outType, internal.FloatToDecimal128, compute.NullIntersection, compute.MemPrealloc)
 	debug.Assert(err == nil, "failed adding cast float to decimal kernel")
-	err = fn.AddNewKernel(arrow.FLOAT64, []functions.InputType{functions.NewExactInput(arrow.PrimitiveTypes.Float64, compute.ShapeAny)}, outType, internal.DoubleToDecimal128, functions.NullIntersection, functions.MemPrealloc)
+	err = fn.AddNewKernel(arrow.FLOAT64, []compute.InputType{compute.NewExactInput(arrow.PrimitiveTypes.Float64, compute.ShapeAny)}, outType, internal.DoubleToDecimal128, compute.NullIntersection, compute.MemPrealloc)
 	debug.Assert(err == nil, "failed to add cast double to decimal kernel")
 
 	for _, in := range intTypes {
@@ -187,11 +187,11 @@ func getCastToDecimal128() CastFunction {
 			exec = internal.CastIntegerToDecimal128[uint64]
 		}
 
-		err = fn.AddNewKernel(in.ID(), []functions.InputType{functions.NewExactInput(in, compute.ShapeAny)}, outType, exec, functions.NullIntersection, functions.MemPrealloc)
+		err = fn.AddNewKernel(in.ID(), []compute.InputType{compute.NewExactInput(in, compute.ShapeAny)}, outType, exec, compute.NullIntersection, compute.MemPrealloc)
 		debug.Assert(err == nil, "failed to add cast integer to decimal kernel")
 	}
 
-	err = fn.AddNewKernel(arrow.DECIMAL128, []functions.InputType{functions.NewInputIDType(arrow.DECIMAL128)}, outType, internal.CastDecimal128ToDecimal128, functions.NullIntersection, functions.MemPrealloc)
+	err = fn.AddNewKernel(arrow.DECIMAL128, []compute.InputType{compute.NewInputIDType(arrow.DECIMAL128)}, outType, internal.CastDecimal128ToDecimal128, compute.NullIntersection, compute.MemPrealloc)
 	debug.Assert(err == nil, "failed to add cast decimal to decimal kernel")
 	return fn
 }
@@ -202,15 +202,15 @@ func getNumericCasts() (out []CastFunction) {
 	out = append(out, getCastToInt[int8]("cast_int8", arrow.PrimitiveTypes.Int8))
 	out = append(out, getCastToInt[int16]("cast_int16", arrow.PrimitiveTypes.Int16))
 	castInt32 := getCastToInt[int32]("cast_int32", arrow.PrimitiveTypes.Int32)
-	addZeroCopyCast(arrow.DATE32, functions.NewExactInput(arrow.FixedWidthTypes.Date32, compute.ShapeAny), functions.NewOutputType(arrow.PrimitiveTypes.Int32), &castInt32)
-	addZeroCopyCast(arrow.TIME32, functions.NewInputIDType(arrow.TIME32), functions.NewOutputType(arrow.PrimitiveTypes.Int32), &castInt32)
+	addZeroCopyCast(arrow.DATE32, compute.NewExactInput(arrow.FixedWidthTypes.Date32, compute.ShapeAny), compute.NewOutputType(arrow.PrimitiveTypes.Int32), &castInt32)
+	addZeroCopyCast(arrow.TIME32, compute.NewInputIDType(arrow.TIME32), compute.NewOutputType(arrow.PrimitiveTypes.Int32), &castInt32)
 	out = append(out, castInt32)
 
 	castInt64 := getCastToInt[int64]("cast_int64", arrow.PrimitiveTypes.Int64)
-	addZeroCopyCast(arrow.DATE64, functions.NewInputIDType(arrow.DATE64), functions.NewOutputType(arrow.PrimitiveTypes.Int64), &castInt64)
-	addZeroCopyCast(arrow.DURATION, functions.NewInputIDType(arrow.DURATION), functions.NewOutputType(arrow.PrimitiveTypes.Int64), &castInt64)
-	addZeroCopyCast(arrow.TIMESTAMP, functions.NewInputIDType(arrow.TIMESTAMP), functions.NewOutputType(arrow.PrimitiveTypes.Int64), &castInt64)
-	addZeroCopyCast(arrow.TIME64, functions.NewInputIDType(arrow.TIME64), functions.NewOutputType(arrow.PrimitiveTypes.Int64), &castInt64)
+	addZeroCopyCast(arrow.DATE64, compute.NewInputIDType(arrow.DATE64), compute.NewOutputType(arrow.PrimitiveTypes.Int64), &castInt64)
+	addZeroCopyCast(arrow.DURATION, compute.NewInputIDType(arrow.DURATION), compute.NewOutputType(arrow.PrimitiveTypes.Int64), &castInt64)
+	addZeroCopyCast(arrow.TIMESTAMP, compute.NewInputIDType(arrow.TIMESTAMP), compute.NewOutputType(arrow.PrimitiveTypes.Int64), &castInt64)
+	addZeroCopyCast(arrow.TIME64, compute.NewInputIDType(arrow.TIME64), compute.NewOutputType(arrow.PrimitiveTypes.Int64), &castInt64)
 	out = append(out, castInt64)
 
 	out = append(out, getCastToInt[uint8]("cast_uint8", arrow.PrimitiveTypes.Uint8))
@@ -220,7 +220,7 @@ func getNumericCasts() (out []CastFunction) {
 
 	// float16 is a special child
 	castHalfFloat := NewCastFunction("cast_half_float", arrow.FLOAT16)
-	addCommonCasts(arrow.FLOAT16, functions.NewOutputType(arrow.FixedWidthTypes.Float16), &castHalfFloat)
+	addCommonCasts(arrow.FLOAT16, compute.NewOutputType(arrow.FixedWidthTypes.Float16), &castHalfFloat)
 	out = append(out, castHalfFloat)
 
 	out = append(out, getCastToFloating[float32]("cast_float", arrow.PrimitiveTypes.Float32))

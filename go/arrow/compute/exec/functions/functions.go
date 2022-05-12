@@ -24,61 +24,23 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/compute"
 )
 
-type Arity struct {
-	NumArgs int
-	VarArgs bool
-}
-
-func Nullary() Arity            { return Arity{0, false} }
-func Unary() Arity              { return Arity{1, false} }
-func Binary() Arity             { return Arity{2, false} }
-func Ternary() Arity            { return Arity{3, false} }
-func VarArgs(minargs int) Arity { return Arity{minargs, true} }
-
-type FunctionKind int8
-
-const (
-	FuncScalarKind FunctionKind = iota
-	FuncVectorKind
-	FuncScalarAggKind
-	FuncHashAggKind
-	FuncMetaKind
-)
-
-type FunctionDoc struct {
-	Summary         string
-	Desc            string
-	ArgNames        []string
-	OptionsType     string
-	OptionsRequired bool
-}
-
-type Function interface {
-	Name() string
-	Kind() FunctionKind
-	Arity() Arity
-	Doc() FunctionDoc
-	DispatchExact([]compute.ValueDescr) (Kernel, error)
-	DefaultOptions() compute.FunctionOptions
-}
-
 type ExecutableFunc interface {
-	Function
+	compute.Function
 	Execute(ctx context.Context, args []compute.Datum, opts compute.FunctionOptions) (compute.Datum, error)
 }
 
 type baseFunc struct {
 	name    string
-	kind    FunctionKind
-	arity   Arity
+	kind    compute.FunctionKind
+	arity   compute.Arity
 	options compute.FunctionOptions
-	doc     FunctionDoc
+	doc     compute.FunctionDoc
 }
 
 func (b *baseFunc) Name() string                            { return b.name }
-func (b *baseFunc) Kind() FunctionKind                      { return b.kind }
-func (b *baseFunc) Arity() Arity                            { return b.arity }
-func (b *baseFunc) Doc() FunctionDoc                        { return b.doc }
+func (b *baseFunc) Kind() compute.FunctionKind              { return b.kind }
+func (b *baseFunc) Arity() compute.Arity                    { return b.arity }
+func (b *baseFunc) Doc() compute.FunctionDoc                { return b.doc }
 func (b *baseFunc) DefaultOptions() compute.FunctionOptions { return b.options }
 
 func validArity(f *baseFunc, numArgs int, label string) error {
@@ -94,19 +56,23 @@ func validArity(f *baseFunc, numArgs int, label string) error {
 	}
 }
 
-func (b *baseFunc) CheckArityTypes(in []InputType) error {
+func (b *baseFunc) CheckArityTypes(in []compute.InputType) error {
 	return validArity(b, len(in), "kernel accepts")
 }
 func (b *baseFunc) CheckArityDescr(in []compute.ValueDescr) error {
 	return validArity(b, len(in), "attempted to look up kernel(s) with")
 }
 
-func (b *baseFunc) DispatchExact(vals []compute.ValueDescr) (Kernel, error) {
-	if b.kind == FuncMetaKind {
+func (b *baseFunc) DispatchExact(vals []compute.ValueDescr) (compute.Kernel, error) {
+	if b.kind == compute.FuncMetaKind {
 		return nil, errors.New("not implemented dispatch for metafunction kernel")
 	}
 
 	return nil, nil
+}
+
+func (b *baseFunc) DispatchBest(vals []compute.ValueDescr) (compute.Kernel, error) {
+	return b.DispatchExact(vals)
 }
 
 type MetaFunction struct {
@@ -115,9 +81,9 @@ type MetaFunction struct {
 	impl func(context.Context, []compute.Datum, compute.FunctionOptions) (compute.Datum, error)
 }
 
-func NewMetaFunction(name string, arity Arity, doc FunctionDoc, impl func(context.Context, []compute.Datum, compute.FunctionOptions) (compute.Datum, error)) MetaFunction {
+func NewMetaFunction(name string, arity compute.Arity, doc compute.FunctionDoc, impl func(context.Context, []compute.Datum, compute.FunctionOptions) (compute.Datum, error)) MetaFunction {
 	return MetaFunction{
-		baseFunc: baseFunc{name: name, arity: arity, doc: doc, kind: FuncMetaKind},
+		baseFunc: baseFunc{name: name, arity: arity, doc: doc, kind: compute.FuncMetaKind},
 		impl:     impl,
 	}
 }
@@ -140,16 +106,16 @@ type ScalarFunction struct {
 	kernels []ScalarKernel
 }
 
-func NewScalarFunction(name string, arity Arity, defaultOpts compute.FunctionOptions) ScalarFunction {
+func NewScalarFunction(name string, arity compute.Arity, defaultOpts compute.FunctionOptions) ScalarFunction {
 	return ScalarFunction{
-		baseFunc: baseFunc{name: name, arity: arity, options: defaultOpts, kind: FuncScalarKind},
+		baseFunc: baseFunc{name: name, arity: arity, options: defaultOpts, kind: compute.FuncScalarKind},
 		kernels:  make([]ScalarKernel, 0),
 	}
 }
 
 func (sf *ScalarFunction) Kernels() []ScalarKernel { return sf.kernels }
 
-func (sf *ScalarFunction) AddNewKernel(in []InputType, out OutputType, exec ArrayKernelExec, init KernelInit) error {
+func (sf *ScalarFunction) AddNewKernel(in []compute.InputType, out compute.OutputType, exec ArrayKernelExec, init compute.KernelInit) error {
 	if err := sf.CheckArityTypes(in); err != nil {
 		return err
 	}
@@ -162,11 +128,11 @@ func (sf *ScalarFunction) AddNewKernel(in []InputType, out OutputType, exec Arra
 }
 
 func (sf *ScalarFunction) AddKernel(kernel ScalarKernel) error {
-	if err := sf.CheckArityTypes(kernel.Signature.inTypes); err != nil {
+	if err := sf.CheckArityTypes(kernel.Signature.InputTypes()); err != nil {
 		return err
 	}
 
-	if sf.arity.VarArgs && !kernel.Signature.varArgs {
+	if sf.arity.VarArgs && !kernel.Signature.VarArgs() {
 		return errors.New("function accepts varargs but kernel signature does not")
 	}
 	sf.kernels = append(sf.kernels, kernel)

@@ -166,7 +166,7 @@ func CastNumberToNumberUnsafe(intype, outtype arrow.Type, input, output compute.
 	}
 }
 
-func ZeroCopyCastExec(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func ZeroCopyCastExec(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	debug.Assert(batch.Values[0].Kind() == compute.KindArray, "invalid kind for zerocopycastexec")
 
 	input := batch.Values[0].(*compute.ArrayDatum).Value
@@ -184,7 +184,7 @@ func toInteger[T constraints.Integer](allowOverflow bool, min, max, v decimal128
 	return T(v.LowBits())
 }
 
-func CastDecimal128ToInteger[T constraints.Integer](ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func CastDecimal128ToInteger[T constraints.Integer](ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	var (
 		opts       = ctx.State.(*compute.CastOptions)
 		inputType  = batch.Values[0].Type().(*arrow.Decimal128Type)
@@ -200,18 +200,18 @@ func CastDecimal128ToInteger[T constraints.Integer](ctx *functions.KernelCtx, ba
 	min := decimal128.New(minHiBits, minLowbits)
 	if opts.AllowDecimalTruncate {
 		if inScale < 0 {
-			exec = scalarUnaryNotNullStateful(func(ctx *functions.KernelCtx, val decimal128.Num, err *error) T {
+			exec = scalarUnaryNotNullStateful(func(ctx *compute.KernelCtx, val decimal128.Num, err *error) T {
 				v := val.IncreaseScaleBy(-inScale)
 				return toInteger[T](opts.AllowIntOverflow, min, max, v, err)
 			})
 		} else {
-			exec = scalarUnaryNotNullStateful(func(ctx *functions.KernelCtx, val decimal128.Num, err *error) T {
+			exec = scalarUnaryNotNullStateful(func(ctx *compute.KernelCtx, val decimal128.Num, err *error) T {
 				v := val.ReduceScaleBy(inScale, true)
 				return toInteger[T](opts.AllowIntOverflow, min, max, v, err)
 			})
 		}
 	} else {
-		exec = scalarUnaryNotNullStateful(func(ctx *functions.KernelCtx, val decimal128.Num, err *error) T {
+		exec = scalarUnaryNotNullStateful(func(ctx *compute.KernelCtx, val decimal128.Num, err *error) T {
 			v, e := val.Rescale(inScale, 0)
 			if e != nil {
 				*err = e
@@ -223,7 +223,7 @@ func CastDecimal128ToInteger[T constraints.Integer](ctx *functions.KernelCtx, ba
 	return exec(ctx, batch, out)
 }
 
-func CastIntegerToDecimal128[T constraints.Integer](ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func CastIntegerToDecimal128[T constraints.Integer](ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	outType := out.Type().(*arrow.Decimal128Type)
 	outScale := outType.Scale
 	outPrecision := outType.Precision
@@ -248,7 +248,7 @@ func CastIntegerToDecimal128[T constraints.Integer](ctx *functions.KernelCtx, ba
 	default:
 		getDecimal = func(v T) decimal128.Num { return decimal128.FromI64(int64(v)) }
 	}
-	exec := scalarUnaryNotNullStateful(func(ctx *functions.KernelCtx, val T, err *error) decimal128.Num {
+	exec := scalarUnaryNotNullStateful(func(ctx *compute.KernelCtx, val T, err *error) decimal128.Num {
 		out, er := getDecimal(val).Rescale(0, outScale)
 		if er != nil {
 			*err = er
@@ -258,7 +258,7 @@ func CastIntegerToDecimal128[T constraints.Integer](ctx *functions.KernelCtx, ba
 	return exec(ctx, batch, out)
 }
 
-func CastDecimal128ToDecimal128(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func CastDecimal128ToDecimal128(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	options := ctx.State.(*compute.CastOptions)
 
 	inType := batch.Values[0].Type().(*arrow.Decimal128Type)
@@ -270,17 +270,17 @@ func CastDecimal128ToDecimal128(ctx *functions.KernelCtx, batch *functions.ExecB
 	var exec functions.ArrayKernelExec
 	if options.AllowDecimalTruncate {
 		if inScale < outScale {
-			exec = scalarUnaryNotNullStateful(func(_ *functions.KernelCtx, val decimal128.Num, _ *error) decimal128.Num {
+			exec = scalarUnaryNotNullStateful(func(_ *compute.KernelCtx, val decimal128.Num, _ *error) decimal128.Num {
 				return val.IncreaseScaleBy(outScale - inScale)
 			})
 		} else {
-			exec = scalarUnaryNotNullStateful(func(_ *functions.KernelCtx, val decimal128.Num, _ *error) decimal128.Num {
+			exec = scalarUnaryNotNullStateful(func(_ *compute.KernelCtx, val decimal128.Num, _ *error) decimal128.Num {
 				return val.ReduceScaleBy(inScale-outScale, true)
 			})
 		}
 		return exec(ctx, batch, out)
 	}
-	exec = scalarUnaryNotNullStateful(func(_ *functions.KernelCtx, val decimal128.Num, err *error) decimal128.Num {
+	exec = scalarUnaryNotNullStateful(func(_ *compute.KernelCtx, val decimal128.Num, err *error) decimal128.Num {
 		out, e := val.Rescale(inScale, outScale)
 		if e != nil {
 			*err = e
@@ -297,33 +297,33 @@ func CastDecimal128ToDecimal128(ctx *functions.KernelCtx, batch *functions.ExecB
 	return exec(ctx, batch, out)
 }
 
-func CastDecimalToFloat(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func CastDecimalToFloat(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	inType := batch.Values[0].Type().(*arrow.Decimal128Type)
 	inScale := inType.Scale
 
-	exec := scalarUnaryNotNullStateful(func(_ *functions.KernelCtx, v decimal128.Num, err *error) float32 {
+	exec := scalarUnaryNotNullStateful(func(_ *compute.KernelCtx, v decimal128.Num, err *error) float32 {
 		return v.ToFloat32(inScale)
 	})
 	return exec(ctx, batch, out)
 }
 
-func CastDecimalToDouble(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func CastDecimalToDouble(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	inType := batch.Values[0].Type().(*arrow.Decimal128Type)
 	inScale := inType.Scale
 
-	exec := scalarUnaryNotNullStateful(func(_ *functions.KernelCtx, v decimal128.Num, _ *error) float64 {
+	exec := scalarUnaryNotNullStateful(func(_ *compute.KernelCtx, v decimal128.Num, _ *error) float64 {
 		return v.ToFloat64(inScale)
 	})
 	return exec(ctx, batch, out)
 }
 
-func FloatToDecimal128(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func FloatToDecimal128(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	options := ctx.State.(*compute.CastOptions)
 	outType := out.Type().(*arrow.Decimal128Type)
 	outScale := outType.Scale
 	outPrec := outType.Precision
 
-	exec := scalarUnaryNotNullStateful(func(_ *functions.KernelCtx, v float32, err *error) decimal128.Num {
+	exec := scalarUnaryNotNullStateful(func(_ *compute.KernelCtx, v float32, err *error) decimal128.Num {
 		out, e := decimal128.FromFloat32(v, outPrec, outScale)
 		if !options.AllowDecimalTruncate && e != nil {
 			*err = e
@@ -334,13 +334,13 @@ func FloatToDecimal128(ctx *functions.KernelCtx, batch *functions.ExecBatch, out
 	return exec(ctx, batch, out)
 }
 
-func DoubleToDecimal128(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func DoubleToDecimal128(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	options := ctx.State.(*compute.CastOptions)
 	outType := out.Type().(*arrow.Decimal128Type)
 	outScale := outType.Scale
 	outPrec := outType.Precision
 
-	exec := scalarUnaryNotNullStateful(func(_ *functions.KernelCtx, v float64, err *error) decimal128.Num {
+	exec := scalarUnaryNotNullStateful(func(_ *compute.KernelCtx, v float64, err *error) decimal128.Num {
 		out, e := decimal128.FromFloat64(v, outPrec, outScale)
 		if !options.AllowDecimalTruncate && e != nil {
 			*err = e
@@ -406,8 +406,8 @@ func GetParseStringExec(out arrow.Type) functions.ArrayKernelExec {
 }
 
 func parseStringToNumberImpl[T constraints.Integer | constraints.Float](parseFn func(string) (T, error)) functions.ArrayKernelExec {
-	return func(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
-		exec := scalarUnaryNotNullStatefulBinaryArg(func(_ *functions.KernelCtx, input []byte, err *error) T {
+	return func(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
+		exec := scalarUnaryNotNullStatefulBinaryArg(func(_ *compute.KernelCtx, input []byte, err *error) T {
 			st := *(*string)(unsafe.Pointer(&input))
 			v, e := parseFn(st)
 			if e != nil {
@@ -423,9 +423,9 @@ var (
 	epoch = time.Unix(0, 0)
 )
 
-func StringToTimestamp(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func StringToTimestamp(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	outType := out.Type().(*arrow.TimestampType)
-	exec := scalarUnaryNotNullStatefulBinaryArg(func(_ *functions.KernelCtx, input []byte, err *error) arrow.Timestamp {
+	exec := scalarUnaryNotNullStatefulBinaryArg(func(_ *compute.KernelCtx, input []byte, err *error) arrow.Timestamp {
 		v := *(*string)(unsafe.Pointer(&input))
 		result, e := arrow.TimestampFromString(v, outType.Unit)
 		if e != nil {
@@ -436,7 +436,7 @@ func StringToTimestamp(ctx *functions.KernelCtx, batch *functions.ExecBatch, out
 	return exec(ctx, batch, out)
 }
 
-func TimestampToDate32(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func TimestampToDate32(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	inType := batch.Values[0].Type().(*arrow.TimestampType)
 	debug.Assert(out.Type().ID() == arrow.DATE32, "timestamptoDate32 called with type other than Date32 as output")
 
@@ -445,14 +445,14 @@ func TimestampToDate32(ctx *functions.KernelCtx, batch *functions.ExecBatch, out
 		return err
 	}
 
-	exec := scalarUnaryNotNullStateful(func(_ *functions.KernelCtx, arg0 arrow.Timestamp, err *error) arrow.Date32 {
+	exec := scalarUnaryNotNullStateful(func(_ *compute.KernelCtx, arg0 arrow.Timestamp, err *error) arrow.Date32 {
 		tm := fnToTime(arg0)
 		return arrow.Date32FromTime(tm)
 	})
 	return exec(ctx, batch, out)
 }
 
-func TimestampToDate64(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func TimestampToDate64(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	inType := batch.Values[0].Type().(*arrow.TimestampType)
 	debug.Assert(out.Type().ID() == arrow.DATE64, "timestamptoDate64 called with type other than Date64 as output")
 
@@ -461,14 +461,14 @@ func TimestampToDate64(ctx *functions.KernelCtx, batch *functions.ExecBatch, out
 		return err
 	}
 
-	exec := scalarUnaryNotNullStateful(func(_ *functions.KernelCtx, arg0 arrow.Timestamp, err *error) arrow.Date64 {
+	exec := scalarUnaryNotNullStateful(func(_ *compute.KernelCtx, arg0 arrow.Timestamp, err *error) arrow.Date64 {
 		tm := fnToTime(arg0)
 		return arrow.Date64FromTime(tm)
 	})
 	return exec(ctx, batch, out)
 }
 
-func TimestampToTime32(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func TimestampToTime32(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	inType := batch.Values[0].Type().(*arrow.TimestampType)
 	outType := out.Type().(*arrow.Time32Type)
 
@@ -533,7 +533,7 @@ func TimestampToTime32(ctx *functions.KernelCtx, batch *functions.ExecBatch, out
 		}
 	}
 
-	exec := scalarUnaryNotNullStateful(func(_ *functions.KernelCtx, arg0 arrow.Timestamp, err *error) arrow.Time32 {
+	exec := scalarUnaryNotNullStateful(func(_ *compute.KernelCtx, arg0 arrow.Timestamp, err *error) arrow.Time32 {
 		t := fnToTime(arg0)
 		dur := t.Sub(t.Truncate(24 * time.Hour))
 		return fn(dur, err)
@@ -541,7 +541,7 @@ func TimestampToTime32(ctx *functions.KernelCtx, batch *functions.ExecBatch, out
 	return exec(ctx, batch, out)
 }
 
-func TimestampToTime64(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func TimestampToTime64(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	inType := batch.Values[0].Type().(*arrow.TimestampType)
 	outType := out.Type().(*arrow.Time64Type)
 
@@ -588,7 +588,7 @@ func TimestampToTime64(ctx *functions.KernelCtx, batch *functions.ExecBatch, out
 		}
 	}
 
-	exec := scalarUnaryNotNullStateful(func(_ *functions.KernelCtx, arg0 arrow.Timestamp, err *error) arrow.Time64 {
+	exec := scalarUnaryNotNullStateful(func(_ *compute.KernelCtx, arg0 arrow.Timestamp, err *error) arrow.Time64 {
 		t := fnToTime(arg0)
 		dur := t.Sub(t.Truncate(24 * time.Hour))
 		return fn(dur, err)
@@ -596,7 +596,7 @@ func TimestampToTime64(ctx *functions.KernelCtx, batch *functions.ExecBatch, out
 	return exec(ctx, batch, out)
 }
 
-func SimpleTemporalCast[I, O arrow.Duration | arrow.Time32 | arrow.Time64 | arrow.Timestamp](ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func SimpleTemporalCast[I, O arrow.Duration | arrow.Time32 | arrow.Time64 | arrow.Timestamp](ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	debug.Assert(batch.Values[0].Kind() == compute.KindArray, "duration to duration cast expects an array")
 
 	input := batch.Values[0].(*compute.ArrayDatum).Value
@@ -767,7 +767,7 @@ func GenerateNumericToString(typ arrow.Type) functions.ArrayKernelExec {
 		runfn = time64ToString
 	}
 
-	return func(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+	return func(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 		input := batch.Values[0].(*compute.ArrayDatum).Value
 		output := out.(*compute.ArrayDatum).Value
 
@@ -783,7 +783,7 @@ func GenerateNumericToString(typ arrow.Type) functions.ArrayKernelExec {
 	}
 }
 
-func CastTimestampToString(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func CastTimestampToString(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	input := batch.Values[0].(*compute.ArrayDatum).Value
 	output := out.(*compute.ArrayDatum).Value
 

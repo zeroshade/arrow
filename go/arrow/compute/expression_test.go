@@ -113,8 +113,8 @@ func TestExpressionEquality(t *testing.T) {
 
 func TestExpressionHashing(t *testing.T) {
 	set := make(map[uint64]compute.Expression)
-
-	e := compute.NewFieldRef("alpha")
+	var e compute.Expression
+	e = compute.NewFieldRef("alpha")
 	set[e.Hash()] = e
 
 	e = compute.NewFieldRef("beta")

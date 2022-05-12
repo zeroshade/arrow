@@ -18,7 +18,6 @@ package compute
 
 import (
 	"bytes"
-	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -67,22 +66,9 @@ type Expression interface {
 	Hash() uint64
 	Equals(Expression) bool
 
-	// Bind binds this expression to the given input schema, looking up appropriate
-	// underlying implementations and some expression simplification may be performed
-	// along with implicit casts being inserted.
-	// Any state necessary for execution will be initialized.
-	//
-	// This only works in conjunction with cgo and being able to link against the
-	// C++ libarrow.so compute library. If this was not built with the libarrow compute
-	// support, this will panic.
-	Bind(context.Context, memory.Allocator, *arrow.Schema) (Expression, error)
-
-	// Release releases the underlying bound C++ memory that is allocated when
-	// a Bind is performed. Any bound expression should get released to ensure
-	// no memory leaks.
+	// All expressions should get released to release any memory that was allocated
+	// for internal structures such as literals or options
 	Release()
-
-	boundExpr() boundRef
 }
 
 func printDatum(datum Datum) string {
@@ -109,13 +95,10 @@ func printDatum(datum Datum) string {
 // as a scalar, an array, or so on.
 type Literal struct {
 	Literal Datum
-
-	bound boundRef
 }
 
 func (Literal) FieldRef() *FieldRef     { return nil }
 func (l *Literal) String() string       { return printDatum(l.Literal) }
-func (l *Literal) boundExpr() boundRef  { return l.bound }
 func (l *Literal) Type() arrow.DataType { return l.Literal.(ArrayLikeDatum).Type() }
 func (l *Literal) IsBound() bool        { return l.Type() != nil }
 func (l *Literal) IsScalarExpr() bool   { return l.Literal.Kind() == KindScalar }
@@ -161,20 +144,8 @@ func (l *Literal) Hash() uint64 {
 	return 0
 }
 
-func (l *Literal) Bind(ctx context.Context, mem memory.Allocator, schema *arrow.Schema) (Expression, error) {
-	bound, _, _, _, err := bindExprSchema(ctx, mem, l, schema)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Literal{l.Literal, bound}, nil
-}
-
 func (l *Literal) Release() {
 	l.Literal.Release()
-	if l.bound != 0 {
-		l.bound.release()
-	}
 }
 
 // Parameter represents a field reference and needs to be bound in order to determine
@@ -183,14 +154,11 @@ type Parameter struct {
 	ref *FieldRef
 
 	// post bind props
-	descr ValueDescr
-	index int
-
-	bound boundRef
+	descr   ValueDescr
+	indices []int
 }
 
 func (Parameter) IsNullLiteral() bool     { return false }
-func (p *Parameter) boundExpr() boundRef  { return p.bound }
 func (p *Parameter) Type() arrow.DataType { return p.descr.Type }
 func (p *Parameter) IsBound() bool        { return p.Type() != nil }
 func (p *Parameter) IsScalarExpr() bool   { return p.ref != nil }
@@ -218,25 +186,7 @@ func (p *Parameter) Equals(other Expression) bool {
 	return false
 }
 
-func (p *Parameter) Bind(ctx context.Context, mem memory.Allocator, schema *arrow.Schema) (Expression, error) {
-	bound, descr, index, _, err := bindExprSchema(ctx, mem, p, schema)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Parameter{
-		ref:   p.ref,
-		index: index,
-		descr: descr,
-		bound: bound,
-	}, nil
-}
-
-func (p *Parameter) Release() {
-	if p.bound != 0 {
-		p.bound.release()
-	}
-}
+func (p *Parameter) Release() {}
 
 type comparisonType int8
 
@@ -325,20 +275,25 @@ func optionsToString(fn FunctionOptions) string {
 type Call struct {
 	funcName string
 	args     []Expression
-	descr    ValueDescr
 	options  FunctionOptions
 
 	cachedHash uint64
-	bound      boundRef
+
+	// post-bind properties
+	BoundDescr  ValueDescr
+	BoundFunc   Function
+	Kernel      Kernel
+	KernelState KernelState
 }
 
-func (c *Call) boundExpr() boundRef  { return c.bound }
-func (c *Call) IsNullLiteral() bool  { return false }
-func (c *Call) FieldRef() *FieldRef  { return nil }
-func (c *Call) Descr() ValueDescr    { return c.descr }
-func (c *Call) Type() arrow.DataType { return c.descr.Type }
-func (c *Call) IsSatisfiable() bool  { return c.Type() == nil || c.Type().ID() != arrow.NULL }
-
+func (c *Call) IsNullLiteral() bool      { return false }
+func (c *Call) FieldRef() *FieldRef      { return nil }
+func (c *Call) Descr() ValueDescr        { return c.BoundDescr }
+func (c *Call) Type() arrow.DataType     { return c.BoundDescr.Type }
+func (c *Call) IsSatisfiable() bool      { return c.Type() == nil || c.Type().ID() != arrow.NULL }
+func (c *Call) FunctionName() string     { return c.funcName }
+func (c *Call) Args() []Expression       { return c.args }
+func (c *Call) Options() FunctionOptions { return c.options }
 func (c *Call) String() string {
 	binary := func(op string) string {
 		return "(" + c.args[0].String() + " " + op + " " + c.args[1].String() + ")"
@@ -399,7 +354,12 @@ func (c *Call) IsScalarExpr() bool {
 			return false
 		}
 	}
-	return isFuncScalar(c.funcName)
+
+	if fn, err := GetRegistry().GetFunction(c.funcName); fn != nil && err == nil {
+		return fn.Kind() == FuncScalarKind
+	}
+
+	return false
 }
 
 func (c *Call) IsBound() bool {
@@ -407,7 +367,7 @@ func (c *Call) IsBound() bool {
 		return false
 	}
 
-	return c.bound != 0
+	return true
 }
 
 func (c *Call) Equals(other Expression) bool {
@@ -432,23 +392,12 @@ func (c *Call) Equals(other Expression) bool {
 	return reflect.DeepEqual(c.options, rhs.options)
 }
 
-func (c *Call) Bind(ctx context.Context, mem memory.Allocator, schema *arrow.Schema) (Expression, error) {
-	_, _, _, output, err := bindExprSchema(ctx, mem, c, schema)
-	if err != nil {
-		return nil, err
-	}
-	return output, nil
-}
-
 func (c *Call) Release() {
 	for _, a := range c.args {
 		a.Release()
 	}
 	if r, ok := c.options.(releasable); ok {
 		r.Release()
-	}
-	if c.bound != 0 {
-		c.bound.release()
 	}
 }
 
@@ -604,27 +553,31 @@ func init() {
 // NewLiteral constructs a new literal expression from any value. It is passed
 // to NewDatum which will construct the appropriate Datum and/or scalar
 // value for the type provided.
-func NewLiteral(arg interface{}) Expression {
+func NewLiteral(arg interface{}) *Literal {
 	return &Literal{Literal: NewDatum(arg)}
 }
 
-func NullLiteral(dt arrow.DataType) Expression {
+func NullLiteral(dt arrow.DataType) *Literal {
 	return &Literal{Literal: NewDatum(scalar.MakeNullScalar(dt))}
 }
 
 // NewRef constructs a parameter expression which refers to a specific field
-func NewRef(ref FieldRef) Expression {
-	return &Parameter{ref: &ref, index: -1}
+func NewRef(ref FieldRef) *Parameter {
+	return &Parameter{ref: &ref, indices: []int{}}
+}
+
+func NewBoundRef(ref *FieldRef, indices []int, descr ValueDescr) *Parameter {
+	return &Parameter{ref: ref, indices: indices, descr: descr}
 }
 
 // NewFieldRef is shorthand for NewRef(FieldRefName(field))
-func NewFieldRef(field string) Expression {
+func NewFieldRef(field string) *Parameter {
 	return NewRef(FieldRefName(field))
 }
 
 // NewCall constructs an expression that represents a specific function call with
 // the given arguments and options.
-func NewCall(name string, args []Expression, opts FunctionOptions) Expression {
+func NewCall(name string, args []Expression, opts FunctionOptions) *Call {
 	return &Call{funcName: name, args: args, options: opts}
 }
 

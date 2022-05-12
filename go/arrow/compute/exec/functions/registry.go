@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+
+	"github.com/apache/arrow/go/v9/arrow/compute"
 )
 
 type FunctionRegistry struct {
@@ -27,7 +29,7 @@ type FunctionRegistry struct {
 	// nameToOpts sync.Map
 }
 
-func (fr *FunctionRegistry) AddFunction(fn Function, allowOverwrite bool) error {
+func (fr *FunctionRegistry) AddFunction(fn compute.Function, allowOverwrite bool) error {
 	// debug validate docstrings
 
 	if allowOverwrite {
@@ -51,9 +53,9 @@ func (fr *FunctionRegistry) AddAlias(target, source string) error {
 	return nil
 }
 
-func (fr *FunctionRegistry) GetFunction(name string) (Function, error) {
+func (fr *FunctionRegistry) GetFunction(name string) (compute.Function, error) {
 	if fn, ok := fr.nameToFunc.Load(name); ok {
-		return fn.(Function), nil
+		return fn.(compute.Function), nil
 	}
 	return nil, fmt.Errorf("no function registered with name: %s", name)
 }

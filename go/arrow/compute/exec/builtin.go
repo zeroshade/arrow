@@ -21,6 +21,7 @@ import (
 	"math"
 	"sync"
 
+	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/compute"
 	"github.com/apache/arrow/go/v9/arrow/compute/exec/functions"
 	"github.com/apache/arrow/go/v9/arrow/compute/exec/kernels"
@@ -28,37 +29,34 @@ import (
 )
 
 var (
-	initRegistry sync.Once
-	registry     *functions.FunctionRegistry
-
-	defaultExecCtx     *functions.ExecCtx
+	defaultExecCtx     *compute.ExecCtx
 	initDefaultExecCtx sync.Once
 )
 
-func GetRegistry() *functions.FunctionRegistry {
-	initRegistry.Do(func() {
-		registry = &functions.FunctionRegistry{}
+func init() {
+	compute.SetRegistryFactory(func() compute.FunctionRegistry {
+		registry := &functions.FunctionRegistry{}
 		kernels.RegisterScalarCasts(registry)
+		return registry
 	})
-	return registry
 }
 
-func DefaultExecCtx() *functions.ExecCtx {
+func DefaultExecCtx() *compute.ExecCtx {
 	initDefaultExecCtx.Do(func() {
-		defaultExecCtx = &functions.ExecCtx{
+		defaultExecCtx = &compute.ExecCtx{
 			Mem:                memory.DefaultAllocator,
 			ChunkSize:          math.MaxInt64,
 			PreallocContiguous: true,
-			Registry:           GetRegistry(),
+			Registry:           compute.GetRegistry(),
 		}
 	})
 	return defaultExecCtx
 }
 
 func CallFunction(ctx context.Context, funcname string, args []compute.Datum, opts compute.FunctionOptions) (compute.Datum, error) {
-	ectx := functions.GetExecCtx(ctx)
+	ectx := compute.GetExecCtx(ctx)
 	if ectx == nil {
-		return CallFunction(functions.SetExecCtx(ctx, DefaultExecCtx()), funcname, args, opts)
+		return CallFunction(compute.SetExecCtx(ctx, DefaultExecCtx()), funcname, args, opts)
 	}
 
 	fn, err := ectx.Registry.GetFunction(funcname)
@@ -66,4 +64,26 @@ func CallFunction(ctx context.Context, funcname string, args []compute.Datum, op
 		return nil, err
 	}
 	return functions.ExecuteFunction(ctx, fn, args, opts)
+}
+
+func Cast(ctx context.Context, value compute.Datum, options *compute.CastOptions) (compute.Datum, error) {
+	return CallFunction(ctx, "cast", []compute.Datum{value}, options)
+}
+
+func CastTo(ctx context.Context, value compute.Datum, toType arrow.DataType, options compute.CastOptions) (compute.Datum, error) {
+	options.ToType = toType
+	return Cast(ctx, value, &options)
+}
+
+func CastArray(ctx context.Context, value arrow.Array, to arrow.DataType, options *compute.CastOptions) (arrow.Array, error) {
+	datum := compute.NewDatum(value)
+	defer datum.Release()
+
+	out, err := CastTo(ctx, datum, to, *options)
+	if err != nil {
+		return nil, err
+	}
+	defer out.Release()
+
+	return out.(*compute.ArrayDatum).MakeArray(), nil
 }

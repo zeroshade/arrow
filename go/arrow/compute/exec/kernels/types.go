@@ -23,7 +23,6 @@ import (
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/apache/arrow/go/v9/arrow/compute"
-	"github.com/apache/arrow/go/v9/arrow/compute/exec/functions"
 	"github.com/apache/arrow/go/v9/arrow/internal/debug"
 )
 
@@ -70,7 +69,7 @@ func canCastFromDictionary(id arrow.Type) bool {
 	return arrow.IsPrimitive(id) || arrow.IsBinaryLike(id) || arrow.IsFixedSizeBinary(id)
 }
 
-func unpackDictionary(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func unpackDictionary(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	debug.Assert(out.Kind() == compute.KindArray, "invalid unpack dictionary type")
 
 	dictArr := batch.Values[0].(*compute.ArrayDatum).MakeArray().(*array.Dictionary)

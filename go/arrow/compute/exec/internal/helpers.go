@@ -62,8 +62,8 @@ func MaxOf[T constraints.Integer]() T {
 	return ones
 }
 
-func ExecScalarUnary[OutType, Arg0Type primitive](op func(ctx *functions.KernelCtx, val Arg0Type) OutType) functions.ArrayKernelExec {
-	execArray := func(ctx *functions.KernelCtx, arg0 arrow.ArrayData, out compute.Datum) error {
+func ExecScalarUnary[OutType, Arg0Type primitive](op func(ctx *compute.KernelCtx, val Arg0Type) OutType) functions.ArrayKernelExec {
+	execArray := func(ctx *compute.KernelCtx, arg0 arrow.ArrayData, out compute.Datum) error {
 		arg := getVals[Arg0Type](arg0, 1)
 		outData := out.(*compute.ArrayDatum).Value
 		output := getVals[OutType](outData, 1)
@@ -74,7 +74,7 @@ func ExecScalarUnary[OutType, Arg0Type primitive](op func(ctx *functions.KernelC
 		return nil
 	}
 
-	execScalar := func(ctx *functions.KernelCtx, arg0 scalar.Scalar, out compute.Datum) error {
+	execScalar := func(ctx *compute.KernelCtx, arg0 scalar.Scalar, out compute.Datum) error {
 		outScalar := out.(*compute.ScalarDatum).Value
 		if arg0.IsValid() {
 			outScalar.SetValid(true)
@@ -91,7 +91,7 @@ func ExecScalarUnary[OutType, Arg0Type primitive](op func(ctx *functions.KernelC
 		return nil
 	}
 
-	return func(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+	return func(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 		switch batch.Values[0].Kind() {
 		case compute.KindArray:
 			return execArray(ctx, batch.Values[0].(*compute.ArrayDatum).Value, out)
@@ -101,8 +101,8 @@ func ExecScalarUnary[OutType, Arg0Type primitive](op func(ctx *functions.KernelC
 	}
 }
 
-func ExecScalarUnaryBoolArg[OutType primitive](op func(ctx *functions.KernelCtx, val bool) OutType) functions.ArrayKernelExec {
-	execArray := func(ctx *functions.KernelCtx, arg0 arrow.ArrayData, out compute.Datum) error {
+func ExecScalarUnaryBoolArg[OutType primitive](op func(ctx *compute.KernelCtx, val bool) OutType) functions.ArrayKernelExec {
+	execArray := func(ctx *compute.KernelCtx, arg0 arrow.ArrayData, out compute.Datum) error {
 		rdr := bitutil.NewBitmapReader(arg0.Buffers()[1].Bytes(), arg0.Offset(), arg0.Len())
 		outData := out.(*compute.ArrayDatum).Value
 		output := getVals[OutType](outData, 1)
@@ -115,7 +115,7 @@ func ExecScalarUnaryBoolArg[OutType primitive](op func(ctx *functions.KernelCtx,
 		return nil
 	}
 
-	execScalar := func(ctx *functions.KernelCtx, arg0 scalar.Scalar, out compute.Datum) error {
+	execScalar := func(ctx *compute.KernelCtx, arg0 scalar.Scalar, out compute.Datum) error {
 		outScalar := out.(*compute.ScalarDatum).Value
 		if arg0.IsValid() {
 			outScalar.SetValid(true)
@@ -132,7 +132,7 @@ func ExecScalarUnaryBoolArg[OutType primitive](op func(ctx *functions.KernelCtx,
 		return nil
 	}
 
-	return func(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+	return func(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 		switch batch.Values[0].Kind() {
 		case compute.KindArray:
 			return execArray(ctx, batch.Values[0].(*compute.ArrayDatum).Value, out)
@@ -142,8 +142,8 @@ func ExecScalarUnaryBoolArg[OutType primitive](op func(ctx *functions.KernelCtx,
 	}
 }
 
-func scalarUnaryNotNullStateful[OutType primitive | decimal128.Num, Arg0Type primitive | decimal128.Num](op func(*functions.KernelCtx, Arg0Type, *error) OutType) functions.ArrayKernelExec {
-	return func(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func scalarUnaryNotNullStateful[OutType primitive | decimal128.Num, Arg0Type primitive | decimal128.Num](op func(*compute.KernelCtx, Arg0Type, *error) OutType) functions.ArrayKernelExec {
+	return func(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 		if batch.Values[0].Kind() == compute.KindArray {
 			var (
 				outArr   = out.(*compute.ArrayDatum).Value
@@ -231,8 +231,8 @@ func ValidateUtf8Binary(data arrow.ArrayData) error {
 		})
 }
 
-func scalarUnaryNotNullStatefulBinaryArg[OutType primitive | decimal128.Num](op func(*functions.KernelCtx, []byte, *error) OutType) functions.ArrayKernelExec {
-	return func(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func scalarUnaryNotNullStatefulBinaryArg[OutType primitive | decimal128.Num](op func(*compute.KernelCtx, []byte, *error) OutType) functions.ArrayKernelExec {
+	return func(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 		if batch.Values[0].Kind() == compute.KindArray {
 			var (
 				outArr      = out.(*compute.ArrayDatum).Value
@@ -293,7 +293,7 @@ func maxDecimalDigitsForInt(id arrow.Type) (int32, error) {
 	return -1, fmt.Errorf("not an integer type: %s", id)
 }
 
-func ShiftTime[InT, OutT constraints.Integer](ctx *functions.KernelCtx, op arrow.TimestampConvertOP, factor int64, input, output arrow.ArrayData) error {
+func ShiftTime[InT, OutT constraints.Integer](ctx *compute.KernelCtx, op arrow.TimestampConvertOP, factor int64, input, output arrow.ArrayData) error {
 	options := ctx.State.(*compute.CastOptions)
 	inData := getVals[InT](input, 1)
 	outData := getVals[OutT](output, 1)

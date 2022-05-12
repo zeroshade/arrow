@@ -72,7 +72,7 @@ func createExecBatchIterator(args []compute.Datum, maxChunksize int64) (*execBat
 	}, nil
 }
 
-func (ebi *execBatchIterator) next(batch *ExecBatch) bool {
+func (ebi *execBatchIterator) next(batch *compute.ExecBatch) bool {
 	if ebi.pos == ebi.length {
 		return false
 	}
@@ -128,7 +128,7 @@ func (ebi *execBatchIterator) next(batch *ExecBatch) bool {
 	return true
 }
 
-func checkOptions(fn Function, opts compute.FunctionOptions) error {
+func checkOptions(fn compute.Function, opts compute.FunctionOptions) error {
 	if opts == nil && fn.Doc().OptionsRequired {
 		return fmt.Errorf("function '%s' cannot be called without options", fn.Name())
 	}
@@ -186,7 +186,7 @@ func getNullGeneralized(datum compute.Datum) nullGeneralized {
 	return nullsPerhaps
 }
 
-func allocDataBuffer(ctx *KernelCtx, length int64, bitWidth int) *memory.Buffer {
+func allocDataBuffer(ctx *compute.KernelCtx, length int64, bitWidth int) *memory.Buffer {
 	if bitWidth == 1 {
 		return ctx.AllocateBitmap(length)
 	}
@@ -208,8 +208,8 @@ func computeDataPrealloc(dt arrow.DataType, widths []bufferPrealloc) []bufferPre
 }
 
 type nullPropagator struct {
-	ctx            *KernelCtx
-	batch          *ExecBatch
+	ctx            *compute.KernelCtx
+	batch          *compute.ExecBatch
 	arrsWithNulls  []arrow.ArrayData
 	isAllNull      bool
 	out            *array.Data
@@ -217,7 +217,7 @@ type nullPropagator struct {
 	preallocBitmap bool
 }
 
-func newNullPropagator(ctx *KernelCtx, batch *ExecBatch, out *array.Data) nullPropagator {
+func newNullPropagator(ctx *compute.KernelCtx, batch *compute.ExecBatch, out *array.Data) nullPropagator {
 	np := nullPropagator{ctx: ctx, batch: batch, out: out, arrsWithNulls: []arrow.ArrayData{}}
 	for _, d := range batch.Values {
 		ng := getNullGeneralized(d)
@@ -359,7 +359,7 @@ func (np *nullPropagator) execute() {
 	}
 }
 
-func propagateNulls(ctx *KernelCtx, batch *ExecBatch, out *array.Data) error {
+func propagateNulls(ctx *compute.KernelCtx, batch *compute.ExecBatch, out *array.Data) error {
 	debug.Assert(out != nil, "propagateNulls output should not be nil")
 	debug.Assert(len(out.Buffers()) > 0, "out buffers must already a slice with length > 0")
 
@@ -402,7 +402,7 @@ func toChunkedArray(values []compute.Datum, dt arrow.DataType) *arrow.Chunked {
 	return arrow.NewChunked(dt, arrs)
 }
 
-func ExecuteFunction(ctx context.Context, fn Function, args []compute.Datum, opts compute.FunctionOptions) (compute.Datum, error) {
+func ExecuteFunction(ctx context.Context, fn compute.Function, args []compute.Datum, opts compute.FunctionOptions) (compute.Datum, error) {
 	if ef, ok := fn.(ExecutableFunc); ok {
 		return ef.Execute(ctx, args, opts)
 	}
@@ -413,10 +413,10 @@ func ExecuteFunction(ctx context.Context, fn Function, args []compute.Datum, opt
 		}
 		opts = fn.DefaultOptions()
 	}
-	ectx := GetExecCtx(ctx)
+	ectx := compute.GetExecCtx(ctx)
 	if ectx == nil {
-		var ectx ExecCtx
-		return ExecuteFunction(SetExecCtx(ctx, &ectx), fn, args, opts)
+		var ectx compute.ExecCtx
+		return ExecuteFunction(compute.SetExecCtx(ctx, &ectx), fn, args, opts)
 	}
 	if err := checkAllValues(args); err != nil {
 		return nil, err
@@ -434,8 +434,8 @@ func ExecuteFunction(ctx context.Context, fn Function, args []compute.Datum, opt
 
 	// implicitly cast args! TODO
 
-	kernelCtx := KernelCtx{Ctx: ectx}
-	initArgs := KernelInitArgs{Kernel: kernel, Inputs: inputDescrs, Options: opts}
+	kernelCtx := compute.KernelCtx{Ctx: ectx}
+	initArgs := compute.KernelInitArgs{Kernel: kernel, Inputs: inputDescrs, Options: opts}
 	init := kernel.GetInit()
 	if init != nil {
 		kernelCtx.State, err = init(&kernelCtx, initArgs)
@@ -446,14 +446,14 @@ func ExecuteFunction(ctx context.Context, fn Function, args []compute.Datum, opt
 
 	var executor kernelExecutor
 	switch fn.Kind() {
-	case FuncScalarKind:
+	case compute.FuncScalarKind:
 		var sexec scalarExecutor
 		executor = &sexec
-	case FuncVectorKind:
+	case compute.FuncVectorKind:
 		return nil, errors.New("vector functions not implemented")
-	case FuncScalarAggKind:
+	case compute.FuncScalarAggKind:
 		return nil, errors.New("scalar agg functions not implemented")
-	case FuncHashAggKind:
+	case compute.FuncHashAggKind:
 		return nil, errors.New("direct execution of hashagg functions not implemented")
 	default:
 		return nil, errors.New("invalid function type")
@@ -485,7 +485,7 @@ func ExecuteFunction(ctx context.Context, fn Function, args []compute.Datum, opt
 }
 
 type kernelExecutor interface {
-	init(*KernelCtx, KernelInitArgs) error
+	init(*compute.KernelCtx, compute.KernelInitArgs) error
 	execute([]compute.Datum, chan<- compute.Datum) error
 	wrapResults(args, outputs []compute.Datum) compute.Datum
 	checkResultType(out compute.Datum, funcName string) error
@@ -496,8 +496,8 @@ type bufferPrealloc struct {
 }
 
 type baseKernelExec struct {
-	ctx              *KernelCtx
-	kernel           Kernel
+	ctx              *compute.KernelCtx
+	kernel           compute.Kernel
 	outDescr         compute.ValueDescr
 	outNumBuffers    int
 	validityPrealloc bool
@@ -505,9 +505,9 @@ type baseKernelExec struct {
 	batchIterator    *execBatchIterator
 }
 
-func (b *baseKernelExec) execCtx() *ExecCtx { return b.ctx.Ctx }
+func (b *baseKernelExec) execCtx() *compute.ExecCtx { return b.ctx.Ctx }
 
-func (b *baseKernelExec) init(ctx *KernelCtx, args KernelInitArgs) (err error) {
+func (b *baseKernelExec) init(ctx *compute.KernelCtx, args compute.KernelInitArgs) (err error) {
 	b.ctx = ctx
 	b.kernel = args.Kernel
 	b.outDescr, err = b.kernel.GetSignature().OutputType().Resolve(b.ctx, args.Inputs)
@@ -539,7 +539,7 @@ func (b *baseKernelExec) prepareOutput(length int) (arrow.ArrayData, error) {
 		buffers[0] = b.ctx.AllocateBitmap(int64(length))
 		defer buffers[0].Release()
 	}
-	if b.kernel.GetNullHandling() == NullOutputNotNull {
+	if b.kernel.GetNullHandling() == compute.NullOutputNotNull {
 		nulls = 0
 	}
 	for i, dp := range b.dataPrealloc {
@@ -575,7 +575,7 @@ func (se *scalarExecutor) wrapResults(inputs, outputs []compute.Datum) compute.D
 		return outputs[0]
 	default:
 		// no outputs emitted, should we really return a 0-length array?
-		arr := scalar.MakeArrayOfNull(se.outDescr.Type, 0, se.execCtx().Allocator())
+		arr := scalar.MakeArrayOfNull(se.outDescr.Type, 0, se.execCtx().Mem)
 		defer arr.Release()
 		return compute.NewDatum(arr)
 	}
@@ -589,9 +589,9 @@ func (se *scalarExecutor) setupPrealloc(totalLen int64, args []compute.Datum) er
 	//  - kernel_->null_handling is COMPUTE_NO_PREALLOC or OUTPUT_NOT_NULL
 	se.validityPrealloc = false
 	if outTypeID != arrow.NULL {
-		if se.kernel.GetNullHandling() == NullComputedPrealloc {
+		if se.kernel.GetNullHandling() == compute.NullComputedPrealloc {
 			se.validityPrealloc = true
-		} else if se.kernel.GetNullHandling() == NullIntersection {
+		} else if se.kernel.GetNullHandling() == compute.NullIntersection {
 			allInputValid := true
 			for _, arg := range args {
 				nullgen := getNullGeneralized(arg) == nullsAllValid
@@ -601,7 +601,7 @@ func (se *scalarExecutor) setupPrealloc(totalLen int64, args []compute.Datum) er
 		}
 	}
 
-	if se.kernel.GetMemAlloc() == MemPrealloc {
+	if se.kernel.GetMemAlloc() == compute.MemPrealloc {
 		se.dataPrealloc = computeDataPrealloc(se.outDescr.Type, se.dataPrealloc)
 	}
 
@@ -638,7 +638,7 @@ func (s *scalarExecutor) prepareExecute(args []compute.Datum) (err error) {
 	return
 }
 
-func (s *scalarExecutor) prepareNextOutput(batch *ExecBatch) (out compute.Datum, err error) {
+func (s *scalarExecutor) prepareNextOutput(batch *compute.ExecBatch) (out compute.Datum, err error) {
 	if s.outDescr.Shape == compute.ShapeArray {
 		if s.preallocContiguous {
 			batchStart := s.batchIterator.pos - batch.Length
@@ -667,7 +667,7 @@ func (s *scalarExecutor) execute(args []compute.Datum, out chan<- compute.Datum)
 	if err := s.prepareExecute(args); err != nil {
 		return err
 	}
-	var batch ExecBatch
+	var batch compute.ExecBatch
 	for s.batchIterator.next(&batch) {
 		if err := s.executeBatch(&batch, out); err != nil {
 			return err
@@ -679,7 +679,7 @@ func (s *scalarExecutor) execute(args []compute.Datum, out chan<- compute.Datum)
 	return nil
 }
 
-func (s *scalarExecutor) executeBatch(batch *ExecBatch, out chan<- compute.Datum) error {
+func (s *scalarExecutor) executeBatch(batch *compute.ExecBatch, out chan<- compute.Datum) error {
 	result, err := s.prepareNextOutput(batch)
 	if err != nil {
 		return err
@@ -690,15 +690,15 @@ func (s *scalarExecutor) executeBatch(batch *ExecBatch, out chan<- compute.Datum
 		outArr := result.(*compute.ArrayDatum).Value.(*array.Data)
 		if s.outDescr.Type.ID() == arrow.NULL {
 			outArr.SetNullN(outArr.Len())
-		} else if s.kernel.GetNullHandling() == NullIntersection {
+		} else if s.kernel.GetNullHandling() == compute.NullIntersection {
 			if err := propagateNulls(s.ctx, batch, outArr); err != nil {
 				return err
 			}
-		} else if s.kernel.GetNullHandling() == NullOutputNotNull {
+		} else if s.kernel.GetNullHandling() == compute.NullOutputNotNull {
 			outArr.SetNullN(0)
 		}
 	} else {
-		if s.kernel.GetNullHandling() == NullIntersection {
+		if s.kernel.GetNullHandling() == compute.NullIntersection {
 			// set scalar validity
 			valid := true
 			for _, v := range batch.Values {
@@ -708,7 +708,7 @@ func (s *scalarExecutor) executeBatch(batch *ExecBatch, out chan<- compute.Datum
 				}
 			}
 			result.(*compute.ScalarDatum).Value.SetValid(valid)
-		} else if s.kernel.GetNullHandling() == NullOutputNotNull {
+		} else if s.kernel.GetNullHandling() == compute.NullOutputNotNull {
 			result.(*compute.ScalarDatum).Value.SetValid(true)
 		}
 	}

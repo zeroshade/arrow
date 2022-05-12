@@ -22,24 +22,24 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/scalar"
 )
 
-func trivialScalarUnaryAsArrayExec(kernelExec functions.ArrayKernelExec, hndl functions.NullHandling) functions.ArrayKernelExec {
-	return func(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func trivialScalarUnaryAsArrayExec(kernelExec functions.ArrayKernelExec, hndl compute.NullHandling) functions.ArrayKernelExec {
+	return func(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 		if out.Kind() == compute.KindArray {
 			return kernelExec(ctx, batch, out)
 		}
 
-		if hndl == functions.NullIntersection && !batch.Values[0].(*compute.ScalarDatum).Value.IsValid() {
+		if hndl == compute.NullIntersection && !batch.Values[0].(*compute.ScalarDatum).Value.IsValid() {
 			out.(*compute.ScalarDatum).Value.SetValid(false)
 			return nil
 		}
 
-		arrInput, err := scalar.MakeArrayFromScalar(batch.Values[0].(*compute.ScalarDatum).Value, 1, ctx.Ctx.Allocator())
+		arrInput, err := scalar.MakeArrayFromScalar(batch.Values[0].(*compute.ScalarDatum).Value, 1, ctx.Ctx.Mem)
 		if err != nil {
 			return err
 		}
 		defer arrInput.Release()
 
-		arrOutput, err := scalar.MakeArrayFromScalar(out.(*compute.ScalarDatum).Value, 1, ctx.Ctx.Allocator())
+		arrOutput, err := scalar.MakeArrayFromScalar(out.(*compute.ScalarDatum).Value, 1, ctx.Ctx.Mem)
 		if err != nil {
 			return err
 		}
@@ -49,7 +49,7 @@ func trivialScalarUnaryAsArrayExec(kernelExec functions.ArrayKernelExec, hndl fu
 		defer inDat.Release()
 		outDat := compute.NewDatum(arrOutput)
 		defer outDat.Release()
-		err = kernelExec(ctx, &functions.ExecBatch{Values: []compute.Datum{inDat}, Length: 1}, outDat)
+		err = kernelExec(ctx, &compute.ExecBatch{Values: []compute.Datum{inDat}, Length: 1}, outDat)
 		if err != nil {
 			return err
 		}
@@ -68,7 +68,7 @@ func trivialScalarUnaryAsArrayExec(kernelExec functions.ArrayKernelExec, hndl fu
 	}
 }
 
-func firstType(_ *functions.KernelCtx, descrs []compute.ValueDescr) (compute.ValueDescr, error) {
+func firstType(_ *compute.KernelCtx, descrs []compute.ValueDescr) (compute.ValueDescr, error) {
 	result := descrs[0]
 	result.Shape = compute.GetBroadcastShape(descrs)
 	return result, nil

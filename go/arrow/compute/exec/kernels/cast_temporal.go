@@ -31,46 +31,46 @@ const (
 func getDate32Cast() CastFunction {
 	fn := NewCastFunction("cast_date32", arrow.DATE32)
 	outType := arrow.PrimitiveTypes.Date32
-	outputType := functions.NewOutputType(outType)
+	outputType := compute.NewOutputType(outType)
 	addCommonCasts(arrow.DATE32, outputType, &fn)
 	// int32 -> date32
-	addZeroCopyCast(arrow.INT32, functions.NewExactInput(arrow.PrimitiveTypes.Int32, compute.ShapeAny), outputType, &fn)
+	addZeroCopyCast(arrow.INT32, compute.NewExactInput(arrow.PrimitiveTypes.Int32, compute.ShapeAny), outputType, &fn)
 
-	fn.AddNewKernel(arrow.DATE64, []functions.InputType{functions.NewExactInput(arrow.PrimitiveTypes.Date64, compute.ShapeAny)}, outputType,
-		trivialScalarUnaryAsArrayExec(func(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+	fn.AddNewKernel(arrow.DATE64, []compute.InputType{compute.NewExactInput(arrow.PrimitiveTypes.Date64, compute.ShapeAny)}, outputType,
+		trivialScalarUnaryAsArrayExec(func(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 			debug.Assert(batch.Values[0].Kind() == compute.KindArray, "date64 cast requires array datum")
 			return internal.ShiftTime[int64, int32](ctx, arrow.ConvDIVIDE, millisecondsInDay, batch.Values[0].(*compute.ArrayDatum).Value, out.(*compute.ArrayDatum).Value)
-		}, functions.NullIntersection),
-		functions.NullIntersection, functions.MemPrealloc)
+		}, compute.NullIntersection),
+		compute.NullIntersection, compute.MemPrealloc)
 
-	fn.AddNewKernel(arrow.TIMESTAMP, []functions.InputType{functions.NewInputIDType(arrow.TIMESTAMP)}, outputType,
-		trivialScalarUnaryAsArrayExec(func(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+	fn.AddNewKernel(arrow.TIMESTAMP, []compute.InputType{compute.NewInputIDType(arrow.TIMESTAMP)}, outputType,
+		trivialScalarUnaryAsArrayExec(func(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 			debug.Assert(batch.Values[0].Kind() == compute.KindArray, "timestamp cast requires array datum")
 			return internal.TimestampToDate32(ctx, batch, out)
-		}, functions.NullIntersection),
-		functions.NullIntersection, functions.MemPrealloc)
+		}, compute.NullIntersection),
+		compute.NullIntersection, compute.MemPrealloc)
 	return fn
 }
 
 func getDate64Cast() CastFunction {
 	fn := NewCastFunction("cast_date64", arrow.DATE64)
 	outType := arrow.PrimitiveTypes.Date64
-	outputType := functions.NewOutputType(outType)
+	outputType := compute.NewOutputType(outType)
 	addCommonCasts(arrow.DATE64, outputType, &fn)
 	// int64 -> date64
-	addZeroCopyCast(arrow.INT64, functions.NewExactInput(arrow.PrimitiveTypes.Int64, compute.ShapeAny), outputType, &fn)
+	addZeroCopyCast(arrow.INT64, compute.NewExactInput(arrow.PrimitiveTypes.Int64, compute.ShapeAny), outputType, &fn)
 
-	fn.AddNewKernel(arrow.DATE32, []functions.InputType{functions.NewExactInput(arrow.FixedWidthTypes.Date32, compute.ShapeAny)}, outputType,
-		trivialScalarUnaryAsArrayExec(func(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+	fn.AddNewKernel(arrow.DATE32, []compute.InputType{compute.NewExactInput(arrow.FixedWidthTypes.Date32, compute.ShapeAny)}, outputType,
+		trivialScalarUnaryAsArrayExec(func(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 			debug.Assert(batch.Values[0].Kind() == compute.KindArray, "date32 -> date64 cast must use an array")
 			return internal.ShiftTime[int32, int64](ctx, arrow.ConvMULTIPLY, millisecondsInDay, batch.Values[0].(*compute.ArrayDatum).Value, out.(*compute.ArrayDatum).Value)
-		}, functions.NullIntersection), functions.NullIntersection, functions.MemPrealloc)
+		}, compute.NullIntersection), compute.NullIntersection, compute.MemPrealloc)
 
-	fn.AddNewKernel(arrow.TIMESTAMP, []functions.InputType{functions.NewInputIDType(arrow.TIMESTAMP)}, outputType,
-		trivialScalarUnaryAsArrayExec(func(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+	fn.AddNewKernel(arrow.TIMESTAMP, []compute.InputType{compute.NewInputIDType(arrow.TIMESTAMP)}, outputType,
+		trivialScalarUnaryAsArrayExec(func(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 			debug.Assert(batch.Values[0].Kind() == compute.KindArray, "timestamp cast requires array datum")
 			return internal.TimestampToDate64(ctx, batch, out)
-		}, functions.NullIntersection), functions.NullIntersection, functions.MemPrealloc)
+		}, compute.NullIntersection), compute.NullIntersection, compute.MemPrealloc)
 	return fn
 }
 
@@ -78,12 +78,12 @@ func getDurationCast() CastFunction {
 	fn := NewCastFunction("cast_duration", arrow.DURATION)
 	addCommonCasts(arrow.DURATION, outputTargetType, &fn)
 	// same integer representation
-	addZeroCopyCast(arrow.INT64, functions.NewExactInput(arrow.PrimitiveTypes.Int64, compute.ShapeAny), outputTargetType, &fn)
+	addZeroCopyCast(arrow.INT64, compute.NewExactInput(arrow.PrimitiveTypes.Int64, compute.ShapeAny), outputTargetType, &fn)
 
 	// between durations
 	kernel := functions.NewScalarKernelWithSig(
-		functions.NewKernelSig([]functions.InputType{functions.NewInputIDType(arrow.DURATION)}, outputTargetType, false),
-		trivialScalarUnaryAsArrayExec(internal.SimpleTemporalCast[arrow.Duration, arrow.Duration], functions.NullIntersection), nil)
+		compute.NewKernelSig([]compute.InputType{compute.NewInputIDType(arrow.DURATION)}, outputTargetType, false),
+		trivialScalarUnaryAsArrayExec(internal.SimpleTemporalCast[arrow.Duration, arrow.Duration], compute.NullIntersection), nil)
 	fn.AddKernel(arrow.DURATION, kernel)
 	return fn
 }
@@ -99,19 +99,19 @@ func getTime32Cast() CastFunction {
 	addCommonCasts(arrow.TIME32, outputTargetType, &fn)
 
 	// zero copy when the unit is the same or same integer representation
-	addZeroCopyCast(arrow.INT32, functions.NewExactInput(arrow.PrimitiveTypes.Int32, compute.ShapeAny), outputTargetType, &fn)
-	fn.AddNewKernel(arrow.TIME32, []functions.InputType{functions.NewInputIDType(arrow.TIME64)}, outputTargetType,
-		trivialScalarUnaryAsArrayExec(internal.SimpleTemporalCast[arrow.Time64, arrow.Time32], functions.NullIntersection),
-		functions.NullIntersection, functions.MemPrealloc)
+	addZeroCopyCast(arrow.INT32, compute.NewExactInput(arrow.PrimitiveTypes.Int32, compute.ShapeAny), outputTargetType, &fn)
+	fn.AddNewKernel(arrow.TIME32, []compute.InputType{compute.NewInputIDType(arrow.TIME64)}, outputTargetType,
+		trivialScalarUnaryAsArrayExec(internal.SimpleTemporalCast[arrow.Time64, arrow.Time32], compute.NullIntersection),
+		compute.NullIntersection, compute.MemPrealloc)
 
 	kernel := functions.NewScalarKernelWithSig(
-		functions.NewKernelSig([]functions.InputType{functions.NewInputIDType(arrow.TIME32)}, outputTargetType, false),
-		trivialScalarUnaryAsArrayExec(internal.SimpleTemporalCast[arrow.Time32, arrow.Time32], functions.NullIntersection), nil)
+		compute.NewKernelSig([]compute.InputType{compute.NewInputIDType(arrow.TIME32)}, outputTargetType, false),
+		trivialScalarUnaryAsArrayExec(internal.SimpleTemporalCast[arrow.Time32, arrow.Time32], compute.NullIntersection), nil)
 	fn.AddKernel(arrow.TIME32, kernel)
 
-	fn.AddNewKernel(arrow.TIMESTAMP, []functions.InputType{functions.NewInputIDType(arrow.TIMESTAMP)}, outputTargetType,
-		trivialScalarUnaryAsArrayExec(internal.TimestampToTime32, functions.NullIntersection),
-		functions.NullIntersection, functions.MemPrealloc)
+	fn.AddNewKernel(arrow.TIMESTAMP, []compute.InputType{compute.NewInputIDType(arrow.TIMESTAMP)}, outputTargetType,
+		trivialScalarUnaryAsArrayExec(internal.TimestampToTime32, compute.NullIntersection),
+		compute.NullIntersection, compute.MemPrealloc)
 	return fn
 }
 
@@ -120,21 +120,21 @@ func getTime64Cast() CastFunction {
 	addCommonCasts(arrow.TIME64, outputTargetType, &fn)
 
 	// zero copy when unit is the same or same integer representation
-	addZeroCopyCast(arrow.INT64, functions.NewExactInput(arrow.PrimitiveTypes.Int64, compute.ShapeAny), outputTargetType, &fn)
+	addZeroCopyCast(arrow.INT64, compute.NewExactInput(arrow.PrimitiveTypes.Int64, compute.ShapeAny), outputTargetType, &fn)
 
 	// time32 -> time64
-	fn.AddNewKernel(arrow.TIME64, []functions.InputType{functions.NewInputIDType(arrow.TIME32)}, outputTargetType,
-		trivialScalarUnaryAsArrayExec(internal.SimpleTemporalCast[arrow.Time32, arrow.Time64], functions.NullIntersection),
-		functions.NullIntersection, functions.MemPrealloc)
+	fn.AddNewKernel(arrow.TIME64, []compute.InputType{compute.NewInputIDType(arrow.TIME32)}, outputTargetType,
+		trivialScalarUnaryAsArrayExec(internal.SimpleTemporalCast[arrow.Time32, arrow.Time64], compute.NullIntersection),
+		compute.NullIntersection, compute.MemPrealloc)
 
 	kernel := functions.NewScalarKernelWithSig(
-		functions.NewKernelSig([]functions.InputType{functions.NewInputIDType(arrow.TIME64)}, outputTargetType, false),
-		trivialScalarUnaryAsArrayExec(internal.SimpleTemporalCast[arrow.Time64, arrow.Time64], functions.NullIntersection), nil)
+		compute.NewKernelSig([]compute.InputType{compute.NewInputIDType(arrow.TIME64)}, outputTargetType, false),
+		trivialScalarUnaryAsArrayExec(internal.SimpleTemporalCast[arrow.Time64, arrow.Time64], compute.NullIntersection), nil)
 	fn.AddKernel(arrow.TIME64, kernel)
 
-	fn.AddNewKernel(arrow.TIMESTAMP, []functions.InputType{functions.NewInputIDType(arrow.TIMESTAMP)}, outputTargetType,
-		trivialScalarUnaryAsArrayExec(internal.TimestampToTime64, functions.NullIntersection),
-		functions.NullIntersection, functions.MemPrealloc)
+	fn.AddNewKernel(arrow.TIMESTAMP, []compute.InputType{compute.NewInputIDType(arrow.TIMESTAMP)}, outputTargetType,
+		trivialScalarUnaryAsArrayExec(internal.TimestampToTime64, compute.NullIntersection),
+		compute.NullIntersection, compute.MemPrealloc)
 	return fn
 }
 
@@ -143,11 +143,11 @@ func getTimestampCast() CastFunction {
 	addCommonCasts(arrow.TIMESTAMP, outputTargetType, &fn)
 
 	// same integer representation
-	addZeroCopyCast(arrow.INT64, functions.NewExactInput(arrow.PrimitiveTypes.Int64, compute.ShapeAny), outputTargetType, &fn)
+	addZeroCopyCast(arrow.INT64, compute.NewExactInput(arrow.PrimitiveTypes.Int64, compute.ShapeAny), outputTargetType, &fn)
 
 	// from date types
-	fn.AddNewKernel(arrow.TIMESTAMP, []functions.InputType{functions.NewInputIDType(arrow.DATE32)}, outputTargetType,
-		trivialScalarUnaryAsArrayExec(func(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+	fn.AddNewKernel(arrow.TIMESTAMP, []compute.InputType{compute.NewInputIDType(arrow.DATE32)}, outputTargetType,
+		trivialScalarUnaryAsArrayExec(func(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 			debug.Assert(batch.Values[0].Kind() == compute.KindArray, "should be array datum in timestamp cast")
 
 			outType := out.Type().(*arrow.TimestampType)
@@ -156,24 +156,24 @@ func getTimestampCast() CastFunction {
 			factor *= millisecondsInDay / 1000
 
 			return internal.ShiftTime[int32, int64](ctx, arrow.ConvMULTIPLY, factor, batch.Values[0].(*compute.ArrayDatum).Value, out.(*compute.ArrayDatum).Value)
-		}, functions.NullIntersection), functions.NullIntersection, functions.MemPrealloc)
+		}, compute.NullIntersection), compute.NullIntersection, compute.MemPrealloc)
 
-	fn.AddNewKernel(arrow.TIMESTAMP, []functions.InputType{functions.NewInputIDType(arrow.DATE64)}, outputTargetType,
-		trivialScalarUnaryAsArrayExec(func(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+	fn.AddNewKernel(arrow.TIMESTAMP, []compute.InputType{compute.NewInputIDType(arrow.DATE64)}, outputTargetType,
+		trivialScalarUnaryAsArrayExec(func(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 			debug.Assert(batch.Values[0].Kind() == compute.KindArray, "should be array datum in timestamp cast")
 
 			outType := out.Type().(*arrow.TimestampType)
 			op, factor := arrow.GetTimestampConvert(arrow.Millisecond, outType.Unit)
 
 			return internal.ShiftTime[int32, int64](ctx, op, factor, batch.Values[0].(*compute.ArrayDatum).Value, out.(*compute.ArrayDatum).Value)
-		}, functions.NullIntersection), functions.NullIntersection, functions.MemPrealloc)
+		}, compute.NullIntersection), compute.NullIntersection, compute.MemPrealloc)
 
-	fn.AddNewKernel(arrow.TIMESTAMP, []functions.InputType{functions.NewExactInput(arrow.BinaryTypes.String, compute.ShapeAny)}, outputTargetType,
-		trivialScalarUnaryAsArrayExec(internal.StringToTimestamp, functions.NullIntersection), functions.NullIntersection, functions.MemPrealloc)
+	fn.AddNewKernel(arrow.TIMESTAMP, []compute.InputType{compute.NewExactInput(arrow.BinaryTypes.String, compute.ShapeAny)}, outputTargetType,
+		trivialScalarUnaryAsArrayExec(internal.StringToTimestamp, compute.NullIntersection), compute.NullIntersection, compute.MemPrealloc)
 
 	kernel := functions.NewScalarKernelWithSig(
-		functions.NewKernelSig([]functions.InputType{functions.NewInputIDType(arrow.TIMESTAMP)}, outputTargetType, false),
-		trivialScalarUnaryAsArrayExec(internal.SimpleTemporalCast[arrow.Timestamp, arrow.Timestamp], functions.NullIntersection), nil)
+		compute.NewKernelSig([]compute.InputType{compute.NewInputIDType(arrow.TIMESTAMP)}, outputTargetType, false),
+		trivialScalarUnaryAsArrayExec(internal.SimpleTemporalCast[arrow.Timestamp, arrow.Timestamp], compute.NullIntersection), nil)
 	fn.AddKernel(arrow.TIMESTAMP, kernel)
 	return fn
 }

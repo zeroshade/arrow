@@ -46,4 +46,4 @@ require (
 	google.golang.org/protobuf v1.27.1
 )
 
-replace github.com/goccy/go-json => github.com/zeroshade/go-json v0.9.8-0.20220505161227-865b21589003
+replace github.com/goccy/go-json => github.com/goccy/go-json v0.9.8-0.20220506185958-23bd66f4c0d5

@@ -33,8 +33,8 @@ import (
 var (
 	castTable             map[arrow.Type]*CastFunction
 	castInit              sync.Once
-	castdoc                                      = functions.FunctionDoc{}
-	resolveOutputFromOpts functions.TypeResolver = func(ctx *functions.KernelCtx, args []compute.ValueDescr) (compute.ValueDescr, error) {
+	castdoc                                    = compute.FunctionDoc{}
+	resolveOutputFromOpts compute.TypeResolver = func(ctx *compute.KernelCtx, args []compute.ValueDescr) (compute.ValueDescr, error) {
 		options := ctx.State.(*compute.CastOptions)
 		return compute.ValueDescr{Type: options.ToType, Shape: args[0].Shape}, nil
 	}
@@ -89,14 +89,14 @@ type CastFunction struct {
 
 func NewCastFunction(name string, outType arrow.Type) CastFunction {
 	return CastFunction{
-		ScalarFunction: functions.NewScalarFunction(name, functions.Unary(), nil),
+		ScalarFunction: functions.NewScalarFunction(name, compute.Unary(), nil),
 		outID:          outType,
 		inputIDs:       make([]arrow.Type, 0),
 	}
 }
 
 func (c *CastFunction) AddKernel(inType arrow.Type, kernel functions.ScalarKernel) error {
-	kernel.Init = func(kc *functions.KernelCtx, kia functions.KernelInitArgs) (functions.KernelState, error) {
+	kernel.Init = func(kc *compute.KernelCtx, kia compute.KernelInitArgs) (compute.KernelState, error) {
 		if _, ok := kia.Options.(*compute.CastOptions); ok {
 			return kia.Options, nil
 		}
@@ -109,14 +109,18 @@ func (c *CastFunction) AddKernel(inType arrow.Type, kernel functions.ScalarKerne
 	return nil
 }
 
-func (c *CastFunction) AddNewKernel(inID arrow.Type, inTypes []functions.InputType, out functions.OutputType, kernelExec functions.ArrayKernelExec, nullHandling functions.NullHandling, memalloc functions.MemAlloc) error {
+func (c *CastFunction) AddNewKernel(inID arrow.Type, inTypes []compute.InputType, out compute.OutputType, kernelExec functions.ArrayKernelExec, nullHandling compute.NullHandling, memalloc compute.MemAlloc) error {
 	kernel := functions.NewScalarKernel(inTypes, out, kernelExec, nil)
 	kernel.MemAlloc = memalloc
 	kernel.NullHandling = nullHandling
 	return c.AddKernel(inID, kernel)
 }
 
-func (c *CastFunction) DispatchExact(vals []compute.ValueDescr) (functions.Kernel, error) {
+func (c *CastFunction) DispatchBest(vals []compute.ValueDescr) (compute.Kernel, error) {
+	return c.DispatchExact(vals)
+}
+
+func (c *CastFunction) DispatchExact(vals []compute.ValueDescr) (compute.Kernel, error) {
 	if err := c.CheckArityDescr(vals); err != nil {
 		return nil, err
 	}
@@ -143,7 +147,7 @@ func (c *CastFunction) DispatchExact(vals []compute.ValueDescr) (functions.Kerne
 	// and if not we just return the first one
 	for _, k := range candidates {
 		arg0 := k.Signature.InputTypes()[0]
-		if arg0.Kind() == functions.ExactType {
+		if arg0.Kind() == compute.ExactType {
 			return k, nil
 		}
 	}
@@ -151,38 +155,38 @@ func (c *CastFunction) DispatchExact(vals []compute.ValueDescr) (functions.Kerne
 	return candidates[0], nil
 }
 
-func addCommonCasts(out arrow.Type, outType functions.OutputType, fn *CastFunction) {
+func addCommonCasts(out arrow.Type, outType compute.OutputType, fn *CastFunction) {
 	// from null
 	kernel := functions.ScalarKernel{}
 	kernel.Exec = castFromNull
-	kernel.Signature = functions.NewKernelSig([]functions.InputType{functions.NewExactInput(arrow.Null, compute.ShapeAny)}, outType, false)
-	kernel.NullHandling = functions.NullComputeNoPrealloc
-	kernel.MemAlloc = functions.MemNoPrealloc
+	kernel.Signature = compute.NewKernelSig([]compute.InputType{compute.NewExactInput(arrow.Null, compute.ShapeAny)}, outType, false)
+	kernel.NullHandling = compute.NullComputeNoPrealloc
+	kernel.MemAlloc = compute.MemNoPrealloc
 	err := fn.AddKernel(arrow.NULL, kernel)
 	debug.Assert(err == nil, "failure adding cast from null kernel")
 
 	if canCastFromDictionary(out) {
-		err = fn.AddNewKernel(arrow.DICTIONARY, []functions.InputType{functions.NewInputIDType(arrow.DICTIONARY)}, outType, trivialScalarUnaryAsArrayExec(unpackDictionary, functions.NullIntersection),
-			functions.NullComputeNoPrealloc, functions.MemNoPrealloc)
+		err = fn.AddNewKernel(arrow.DICTIONARY, []compute.InputType{compute.NewInputIDType(arrow.DICTIONARY)}, outType, trivialScalarUnaryAsArrayExec(unpackDictionary, compute.NullIntersection),
+			compute.NullComputeNoPrealloc, compute.MemNoPrealloc)
 		debug.Assert(err == nil, "failed adding dictionary cast kernel")
 	}
 
-	err = fn.AddNewKernel(arrow.EXTENSION, []functions.InputType{functions.NewInputIDType(arrow.EXTENSION)}, outType, castFromExtension, functions.NullComputeNoPrealloc, functions.MemNoPrealloc)
+	err = fn.AddNewKernel(arrow.EXTENSION, []compute.InputType{compute.NewInputIDType(arrow.EXTENSION)}, outType, castFromExtension, compute.NullComputeNoPrealloc, compute.MemNoPrealloc)
 	debug.Assert(err == nil, "failed adding extension cast kernel")
 }
 
-func generateVarBinaryBaseStandin(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func generateVarBinaryBaseStandin(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	return nil
 }
 
-func castFunctorStandin(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func castFunctorStandin(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	return nil
 }
 
-func castFromNull(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func castFromNull(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	if batch.Values[0].Kind() != compute.KindScalar {
 		output := out.(*compute.ArrayDatum).Value
-		arr := scalar.MakeArrayOfNull(output.DataType(), int(batch.Length), ctx.Ctx.Allocator())
+		arr := scalar.MakeArrayOfNull(output.DataType(), int(batch.Length), ctx.Ctx.Mem)
 		output.Release()
 		arr.Data().Retain()
 		out.(*compute.ArrayDatum).Value = arr.Data()
@@ -190,7 +194,7 @@ func castFromNull(ctx *functions.KernelCtx, batch *functions.ExecBatch, out comp
 	return nil
 }
 
-func castFromExtension(ctx *functions.KernelCtx, batch *functions.ExecBatch, out compute.Datum) error {
+func castFromExtension(ctx *compute.KernelCtx, batch *compute.ExecBatch, out compute.Datum) error {
 	// opts := ctx.State().(*compute.CastOptions)
 	if batch.Values[0].Kind() == compute.KindScalar {
 
@@ -199,20 +203,16 @@ func castFromExtension(ctx *functions.KernelCtx, batch *functions.ExecBatch, out
 	return errors.New("not implemented")
 }
 
-func addZeroCopyCast(in arrow.Type, intype functions.InputType, outType functions.OutputType, fn *CastFunction) {
-	sig := functions.NewKernelSig([]functions.InputType{intype}, outType, false)
-	kernel := functions.NewScalarKernelWithSig(sig, trivialScalarUnaryAsArrayExec(internal.ZeroCopyCastExec, functions.NullIntersection), nil)
-	kernel.NullHandling = functions.NullComputeNoPrealloc
-	kernel.MemAlloc = functions.MemNoPrealloc
+func addZeroCopyCast(in arrow.Type, intype compute.InputType, outType compute.OutputType, fn *CastFunction) {
+	sig := compute.NewKernelSig([]compute.InputType{intype}, outType, false)
+	kernel := functions.NewScalarKernelWithSig(sig, trivialScalarUnaryAsArrayExec(internal.ZeroCopyCastExec, compute.NullIntersection), nil)
+	kernel.NullHandling = compute.NullComputeNoPrealloc
+	kernel.MemAlloc = compute.MemNoPrealloc
 	fn.AddKernel(in, kernel)
 }
 
-func addSimpleCast(inTyp functions.InputType, outTyp functions.OutputType, fn *CastFunction) {
-
-}
-
 func RegisterScalarCasts(reg *functions.FunctionRegistry) {
-	fn := functions.NewMetaFunction("cast", functions.Unary(), castdoc, func(ctx context.Context, args []compute.Datum, opts compute.FunctionOptions) (compute.Datum, error) {
+	fn := functions.NewMetaFunction("cast", compute.Unary(), castdoc, func(ctx context.Context, args []compute.Datum, opts compute.FunctionOptions) (compute.Datum, error) {
 		castOpts, ok := opts.(*compute.CastOptions)
 		if !ok || castOpts.ToType == nil {
 			return nil, errors.New("cast requires options with a ToType")

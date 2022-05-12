@@ -1,1 +1,3 @@
 github.com/apache/arrow/go/v9 v9.0.0-20220511115301-0bae875bb8d9/go.mod h1:Ckw6oh8wIcLsJZOnqHOHj1iro5TmLeqDzPL77K8Cgzg=
+github.com/stretchr/testify v1.7.1/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+gopkg.in/yaml.v3 v3.0.0-20210107192922-496545a6307b/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=

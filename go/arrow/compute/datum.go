@@ -49,6 +49,16 @@ func (v *ValueDescr) String() string {
 	return fmt.Sprintf("%s [%s]", v.Shape, v.Type)
 }
 
+func (v ValueDescr) Equals(other ValueDescr) bool {
+	if v.Shape != other.Shape {
+		return false
+	}
+	if v.Type == other.Type {
+		return true
+	}
+	return arrow.TypeEqual(v.Type, other.Type)
+}
+
 // DatumKind is an enum used for denoting which kind of type a datum is encapsulating
 type DatumKind int
 
