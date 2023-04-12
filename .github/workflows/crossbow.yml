@@ -1,0 +1,52 @@
+name: Crossbow
+on:
+  push:
+
+
+env:
+  # Current oldest supported version according to https://endoflife.date/macos
+  MACOSX_DEPLOYMENT_TARGET: "10.15"
+
+jobs:
+  verify:
+    name: "Verify release candidate on macOS"
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Arrow
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          path: arrow
+          repository: apache/arrow
+          ref: e488942cd552ac36a46d40477c1b0326a626ed98
+          submodules: recursive
+
+
+
+      - uses: actions/setup-java@v2
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+
+      - uses: actions/setup-dotnet@v2
+        with:
+          dotnet-version: '7.0.x'
+
+      - uses: actions/setup-node@v2-beta
+        with:
+          node-version: '16'
+
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
+
+      - name: Run verification
+        shell: bash
+        env:
+          TEST_DEFAULT: 0
+          TEST_CPP: 1
+          USE_CONDA: 1
+        run: |
+          arrow/dev/release/verify-release-candidate.sh  
