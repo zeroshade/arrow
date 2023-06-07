@@ -180,10 +180,6 @@ func NewFieldRefFromDotPath(dotpath string, rootSchema *arrow.Schema) (expr.Refe
 					keyLiteral = expr.NewPrimitiveLiteral(int32(idx), false)
 				case arrow.INT64:
 					keyLiteral = expr.NewPrimitiveLiteral(int64(idx), false)
-				case arrow.FLOAT32:
-					keyLiteral = expr.NewPrimitiveLiteral(float32(idx), false)
-				case arrow.FLOAT64:
-					keyLiteral = expr.NewPrimitiveLiteral(float64(idx), false)
 				default:
 					return nil, fmt.Errorf("%w: dotpath ref to map key type %s", arrow.ErrNotImplemented, ct.KeyType())
 				}
